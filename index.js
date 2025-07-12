@@ -1,4 +1,3 @@
-sudo tee index.js > /dev/null << 'EOF'
 const axios = require('axios');
 const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
