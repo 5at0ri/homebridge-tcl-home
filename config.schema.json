@@ -1,0 +1,35 @@
+{
+  "pluginAlias": "TclHome",
+  "pluginType": "platform",
+  "singular": true,
+  "schema": {
+    "type": "object",
+    "properties": {
+      "name": {
+        "title": "Platform Name",
+        "type": "string",
+        "default": "TCL Home",
+        "required": true
+      },
+      "username": {
+        "title": "TCL Home Email",
+        "type": "string",
+        "format": "email",
+        "required": true,
+        "description": "Your TCL Home app email address"
+      },
+      "password": {
+        "title": "TCL Home Password",
+        "type": "string",
+        "required": true,
+        "description": "Your TCL Home app password"
+      },
+      "debugMode": {
+        "title": "Enable Debug Logging",
+        "type": "boolean",
+        "default": false,
+        "description": "Show detailed debug information in logs"
+      }
+    }
+  }
+}
