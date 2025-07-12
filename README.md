@@ -32,3 +32,83 @@ Currently tested and working with:
 
 ```bash
 npm install -g homebridge-tcl-home
+
+```
+
+## Configuration
+
+Add this platform to your Homebridge config:
+
+```json
+{
+  "platforms": [
+    {
+      "platform": "TclHome",
+      "name": "TCL Home",
+      "username": "your.email@example.com",
+      "password": "your_password",
+      "debugMode": false
+    }
+  ]
+}
+```
+### Configuration Options
+
+| Option | Required | Description |
+|--------|----------|-------------|
+| `username` | Yes | Your TCL Home app email |
+| `password` | Yes | Your TCL Home app password |
+| `debugMode` | No | Enable detailed logging (default: false) |
+
+## Setup Instructions
+
+1. **Download TCL Home app** and create an account
+2. **Add your AC** to the TCL Home app
+3. **Install this plugin** in Homebridge
+4. **Configure** with your TCL Home credentials
+5. **Restart Homebridge**
+
+Your AC should appear in the Home app automatically!
+
+## HomeKit Controls
+
+### Main Thermostat
+- **Power**: On/Off
+- **Mode**: Off, Cool, Auto (Fan)
+- **Temperature**: 18-30°C target temperature
+
+### Additional Controls
+- **Sleep Mode Switch**: Toggle sleep mode
+- **Fan Switch**: Independent fan mode
+- **Fan Speed**: Auto (25%), Low (50%), High (100%)
+
+## Troubleshooting
+
+### Debug Mode
+Enable `debugMode: true` in config to see detailed logs.
+
+### Common Issues
+- **Authentication failed**: Check email/password are correct
+- **Device not found**: Ensure AC is connected in TCL Home app
+- **Commands not working**: Try restarting Homebridge
+
+## Credits
+
+This plugin is inspired by and builds upon the excellent work done by [nemesa](https://github.com/nemesa) in the [ha-tcl-home-unofficial-integration](https://github.com/nemesa/ha-tcl-home-unofficial-integration) project for Home Assistant.
+
+Special thanks for the API documentation and authentication flow analysis.
+
+## Contributing
+
+This plugin was created to get basic functionality working. If you'd like to add support for more devices or features:
+
+1. Fork this repository
+2. Add your improvements
+
+## License
+
+MIT License - see LICENSE file for details.
+
+## Disclaimer
+
+This plugin is not affiliated with TCL. Use at your own risk.
