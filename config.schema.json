@@ -2,6 +2,8 @@
   "pluginAlias": "TclHome",
   "pluginType": "platform",
   "singular": true,
+  "headerDisplay": "TCL Home plugin for Homebridge - Control your TCL air conditioners through HomeKit",
+  "footerDisplay": "For support and documentation, visit: [GitHub Repository](https://github.com/5at0ri/homebridge-tcl-home)",
   "schema": {
     "type": "object",
     "properties": {
@@ -9,13 +11,15 @@
         "title": "Platform Name",
         "type": "string",
         "default": "TCL Home",
-        "required": true
+        "required": true,
+        "description": "Name for this platform in Homebridge"
       },
       "username": {
         "title": "TCL Home Email",
         "type": "string",
         "format": "email",
         "required": true,
+        "placeholder": "your.email@example.com",
         "description": "Your TCL Home app email address"
       },
       "password": {
@@ -28,8 +32,31 @@
         "title": "Enable Debug Logging",
         "type": "boolean",
         "default": false,
-        "description": "Show detailed debug information in logs"
+        "description": "Show detailed debug information in Homebridge logs (useful for troubleshooting)"
       }
     }
-  }
+  },
+  "layout": [
+    {
+      "type": "fieldset",
+      "title": "TCL Home Account Credentials",
+      "description": "Enter your TCL Home app login details",
+      "expandable": false,
+      "items": [
+        "name",
+        "username", 
+        "password"
+      ]
+    },
+    {
+      "type": "fieldset",
+      "title": "Advanced Options",
+      "description": "Optional settings for debugging and troubleshooting",
+      "expandable": true,
+      "expanded": false,
+      "items": [
+        "debugMode"
+      ]
+    }
+  ]
 }
