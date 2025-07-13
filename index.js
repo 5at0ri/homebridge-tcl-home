@@ -717,6 +717,13 @@ class TclAirConditioner {
   async getFanOn() {
     try {
       const state = await this.platform.tclApi.getDeviceState(this.device.deviceId);
+      
+      // FIXED: If we're locked to AUTO mode, fan should show as ON even if device reports different workMode
+      if (this.lockedMode === this.platform.api.hap.Characteristic.TargetHeatingCoolingState.AUTO && state && state.powerSwitch === 1) {
+        return true; // Fan is ON if locked to AUTO and device is powered
+      }
+      
+      // Normal logic
       return state ? (state.powerSwitch === 1 && state.workMode === 3) : false;
     } catch (error) {
       this.log.error('❌ Error getting fan state:', error.message);
@@ -778,7 +785,22 @@ class TclAirConditioner {
   async getRotationSpeed() {
     try {
       const state = await this.platform.tclApi.getDeviceState(this.device.deviceId);
-      if (!state || state.workMode !== 3) {
+      if (!state || !state.powerSwitch) {
+        return 0; // Fan is off if device is off
+      }
+      
+      // FIXED: If we're locked to AUTO mode, always show fan speed even if device reports different workMode
+      if (this.lockedMode === this.platform.api.hap.Characteristic.TargetHeatingCoolingState.AUTO) {
+        // We're in locked fan mode - show the actual fan speed regardless of reported workMode
+        switch (state.windSpeed) {
+          case 1: return 75;   // F1 = 75% (51-100% range) 
+          case 2: return 25;   // F2 = 25% (0-50% range)
+          default: return 75;
+        }
+      }
+      
+      // Normal logic - only show fan speed if actually in fan mode
+      if (state.workMode !== 3) {
         return 0; // Fan is off if not in fan mode
       }
       
@@ -860,7 +882,7 @@ class TclAirConditioner {
             state.currentTemperature
           );
 
-          // IMPROVED: Use locked mode if set, otherwise use device state
+          // IMPROVED: Use locked mode if set, but also show what device actually reports
           if (this.lockedMode !== undefined) {
             // Mode is locked - force HomeKit to show the locked mode
             this.service.updateCharacteristic(
@@ -868,11 +890,12 @@ class TclAirConditioner {
               this.lockedMode
             );
             
-            // Set current state based on locked mode
+            // Set current state based on actual device state (HomeKit design)
             let currentState;
-            if (this.lockedMode === this.platform.api.hap.Characteristic.TargetHeatingCoolingState.OFF) {
+            if (!state.powerSwitch) {
               currentState = this.platform.api.hap.Characteristic.CurrentHeatingCoolingState.OFF;
             } else {
+              // If device is powered and locked to AUTO (fan mode) OR COOL (AC mode), show COOL
               currentState = this.platform.api.hap.Characteristic.CurrentHeatingCoolingState.COOL;
             }
             
@@ -881,7 +904,7 @@ class TclAirConditioner {
               currentState
             );
             
-            this.platform.tclApi.debug(`🔒 Mode LOCKED: ${this.lockedMode} (overriding device state)`);
+            this.platform.tclApi.debug(`🔒 Mode LOCKED: Target=${this.lockedMode}, Current=COOL (HomeKit design), Device: Power=${state.powerSwitch}, Mode=${state.workMode}`);
           } else {
             // No locked mode - use normal device state logic
             let currentHeatingCoolingState;
@@ -918,8 +941,8 @@ class TclAirConditioner {
             );
           }
 
-          // Handle temperature control permissions based on mode
-          if (state.workMode === 3) {
+          // Handle temperature control permissions based on actual device mode
+          if (state.workMode === 3 || this.lockedMode === this.platform.api.hap.Characteristic.TargetHeatingCoolingState.AUTO) {
             // Fan mode - disable temperature control
             this.disableTemperatureControl();
           } else {
@@ -933,30 +956,40 @@ class TclAirConditioner {
             state.sleep === 1
           );
 
-          // Update fan controls
-          const isFanMode = state.workMode === 3;
-          this.fanService.updateCharacteristic(
-            this.platform.api.hap.Characteristic.On,
-            state.powerSwitch === 1 && isFanMode
-          );
-
-          // Update fan speed with corrected mapping
+          // IMPROVED: Update fan controls based on locked mode + device state
+          let isFanMode = false;
           let fanSpeedPercent = 0;
-          if (isFanMode) {
+
+          if (this.lockedMode === this.platform.api.hap.Characteristic.TargetHeatingCoolingState.AUTO && state.powerSwitch === 1) {
+            // Locked to AUTO and device is on - show fan as active
+            isFanMode = true;
             switch (state.windSpeed) {
               case 1: fanSpeedPercent = 75; break;   // F1 hardware = 75% display
               case 2: fanSpeedPercent = 25; break;   // F2 hardware = 25% display
               default: fanSpeedPercent = 75; break;
             }
+          } else if (state.workMode === 3) {
+            // Actually in fan mode
+            isFanMode = true;
+            switch (state.windSpeed) {
+              case 1: fanSpeedPercent = 75; break;
+              case 2: fanSpeedPercent = 25; break;
+              default: fanSpeedPercent = 75; break;
+            }
           }
+
+          this.fanService.updateCharacteristic(
+            this.platform.api.hap.Characteristic.On,
+            state.powerSwitch === 1 && isFanMode
+          );
           
           this.fanService.updateCharacteristic(
             this.platform.api.hap.Characteristic.RotationSpeed,
             fanSpeedPercent
           );
           
-          // Log sync updates
-          this.platform.tclApi.debug(`🔄 Synced: Power=${state.powerSwitch}, Mode=${state.workMode}, Temp=${state.targetTemperature}°C, Fan=${fanSpeedPercent}%`);
+          // Enhanced logging
+          this.platform.tclApi.debug(`🔄 Synced: Power=${state.powerSwitch}, DeviceMode=${state.workMode}, LockedMode=${this.lockedMode}, Fan=${fanSpeedPercent}%`);
         }
       } catch (error) {
         this.platform.tclApi.debug('🔄 Polling update:', error.message);
