@@ -32,6 +32,15 @@ jobs:
         git config --global user.name "github-actions[bot]"
         git config --global user.email "github-actions[bot]@users.noreply.github.com"
 
+    - name: Check git status
+      run: git status
+
+    - name: Commit any changes
+      run: |
+        git add .
+        git diff --staged --quiet || git commit -m "Auto-commit before version bump"
+      continue-on-error: true
+
     - name: Bump version
       run: npm version patch
 
