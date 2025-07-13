@@ -782,7 +782,7 @@ class TclAirConditioner {
     }
   }
 
-  async getRotationSpeed() {
+async getRotationSpeed() {
     try {
       const state = await this.platform.tclApi.getDeviceState(this.device.deviceId);
       if (!state || !state.powerSwitch) {
@@ -792,6 +792,13 @@ class TclAirConditioner {
       // FIXED: If we're locked to AUTO mode, always show fan speed even if device reports different workMode
       if (this.lockedMode === this.platform.api.hap.Characteristic.TargetHeatingCoolingState.AUTO) {
         // We're in locked fan mode - show the actual fan speed regardless of reported workMode
+        
+        // If user manually set a percentage, keep showing that instead of device feedback
+        if (this.lastUserSetSpeed !== undefined) {
+          return this.lastUserSetSpeed;
+        }
+        
+        // Otherwise show based on device state
         switch (state.windSpeed) {
           case 1: return 100;  // F1 = 100% (High speed)
           case 2: return 50;   // F2 = 50% (Low speed)
@@ -804,7 +811,12 @@ class TclAirConditioner {
         return 0; // Fan is off if not in fan mode
       }
       
-      // FIXED MAPPING: F1=100% (High), F2=50% (Low)
+      // If user manually set a percentage, keep showing that
+      if (this.lastUserSetSpeed !== undefined) {
+        return this.lastUserSetSpeed;
+      }
+      
+      // CORRECTED MAPPING: F1=100% (High), F2=50% (Low)
       switch (state.windSpeed) {
         case 1: return 100;  // F1 = 100% (High speed)
         case 2: return 50;   // F2 = 50% (Low speed)
@@ -820,6 +832,9 @@ class TclAirConditioner {
     try {
       // Mark when we manually change the mode
       this.lastModeChange = Date.now();
+      
+      // Remember what the user actually set so we can display it back
+      this.lastUserSetSpeed = value;
       
       // Auto-switch to fan mode if not already
       const currentState = await this.platform.tclApi.getDeviceState(this.device.deviceId);
@@ -847,11 +862,11 @@ class TclAirConditioner {
         await new Promise(resolve => setTimeout(resolve, 1000));
       }
       
-      // FIXED MAPPING: 0-75% = F2 (Low), 76-100% = F1 (High)
+      // CORRECTED MAPPING: 0-50% = F2 (Low), 51-100% = F1 (High)
       let fanSpeed;
       let fanName;
       
-      if (value <= 75) {
+      if (value <= 50) {
         fanSpeed = 2;  // F2 hardware
         fanName = 'F2 (Low)';
       } else {
@@ -864,13 +879,13 @@ class TclAirConditioner {
       };
       
       await this.platform.tclApi.setDeviceState(this.device.deviceId, properties);
-      this.log.info(`💨 FAN SPEED: Set to ${fanName} (${value}% → hardware F${fanSpeed}) - AUTO mode LOCKED permanently`);
+      this.log.info(`💨 FAN SPEED: Set to ${fanName} (${value}% → hardware F${fanSpeed}) - USER SET ${value}% - AUTO mode LOCKED permanently`);
     } catch (error) {
       this.log.error('❌ Error setting fan rotation speed:', error.message);
       throw new this.platform.api.hap.HapStatusError(this.platform.api.hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE);
     }
   }
-
+  
   startPolling() {
     setInterval(async () => {
       try {
