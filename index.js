@@ -92,6 +92,8 @@ class TclHomeApi {
     this.awsCredentials = null;
     this.currentDeviceState = {};
     this.iotData = null;
+    this.authRetryCount = 0;
+    this.maxAuthRetries = 3;
   }
 
   debug(message, ...args) {
@@ -138,6 +140,7 @@ class TclHomeApi {
       
       if (response.data.status === 1) {
         this.authData = response.data;
+        this.authRetryCount = 0; // Reset retry count on success
         this.log.info('✅ Successfully authenticated with TCL Home');
       } else {
         throw new Error('Authentication failed: Invalid credentials');
@@ -377,8 +380,30 @@ class TclHomeApi {
       this.log.info(`✅ Successfully published to AWS IoT`);
       return true;
     } catch (error) {
+      if (error.message.includes('Forbidden')) {
+        this.log.warn('🔄 AWS credentials expired, attempting to re-authenticate...');
+        await this.handleAuthExpiry();
+        return false;
+      }
       this.log.error(`❌ Failed to publish to AWS IoT: ${error.message}`);
       return false;
+    }
+  }
+
+  async handleAuthExpiry() {
+    if (this.authRetryCount >= this.maxAuthRetries) {
+      this.log.error('❌ Max authentication retries reached. Please restart Homebridge.');
+      return;
+    }
+
+    this.authRetryCount++;
+    this.log.info(`🔄 Re-authenticating (attempt ${this.authRetryCount}/${this.maxAuthRetries})...`);
+    
+    try {
+      await this.initialize();
+      this.log.info('✅ Re-authentication successful');
+    } catch (error) {
+      this.log.error('❌ Re-authentication failed:', error.message);
     }
   }
 
@@ -510,6 +535,28 @@ class TclAirConditioner {
     this.platform.tclApi.debug('🌡️ Temperature control disabled (fan mode)');
   }
 
+  async switchToFanMode() {
+    // Smart switching: Automatically switch main thermostat to AUTO when using fan controls
+    this.log.info(`🔄 Smart switch: Activating fan mode`);
+    
+    const properties = {
+      powerSwitch: 1,
+      workMode: 3,
+      windSpeed: 1  // Default to F1
+    };
+    
+    await this.platform.tclApi.setDeviceState(this.device.deviceId, properties);
+    
+    // Update HomeKit display
+    setTimeout(() => {
+      this.service.updateCharacteristic(
+        this.platform.api.hap.Characteristic.TargetHeatingCoolingState,
+        this.platform.api.hap.Characteristic.TargetHeatingCoolingState.AUTO
+      );
+      this.disableTemperatureControl();
+    }, 500);
+  }
+
   async getCurrentHeatingCoolingState() {
     try {
       const state = await this.platform.tclApi.getDeviceState(this.device.deviceId);
@@ -521,7 +568,8 @@ class TclAirConditioner {
         case 0:
           return this.platform.api.hap.Characteristic.CurrentHeatingCoolingState.COOL;
         case 3:
-          return this.platform.api.hap.Characteristic.CurrentHeatingCoolingState.OFF;
+          // Fan mode shows as "running" (COOL) not off
+          return this.platform.api.hap.Characteristic.CurrentHeatingCoolingState.COOL;
         default:
           return this.platform.api.hap.Characteristic.CurrentHeatingCoolingState.OFF;
       }
@@ -564,7 +612,7 @@ class TclAirConditioner {
           };
           this.log.info(`❄️ Setting AC to OFF`);
           // Re-enable temperature control
-          this.enableTemperatureControl();
+          setTimeout(() => this.enableTemperatureControl(), 1000);
           break;
           
         case Characteristic.TargetHeatingCoolingState.COOL:
@@ -577,9 +625,9 @@ class TclAirConditioner {
             turbo: 0,
             silenceSwitch: 0
           };
-          this.log.info(`❄️ Setting AC to COOL mode (workMode: 0)`);
+          this.log.info(`❄️ Setting AC to COOL mode (AC cooling)`);
           // Re-enable temperature control
-          this.enableTemperatureControl();
+          setTimeout(() => this.enableTemperatureControl(), 1000);
           break;
           
         case Characteristic.TargetHeatingCoolingState.AUTO:
@@ -588,9 +636,9 @@ class TclAirConditioner {
             workMode: 3,
             windSpeed: 1  // Start with F1
           };
-          this.log.info(`💨 Setting AC to FAN mode (AUTO) - Temperature control disabled`);
+          this.log.info(`💨 Setting AC to AUTO mode (Fan only)`);
           // Disable temperature control in fan mode
-          this.disableTemperatureControl();
+          setTimeout(() => this.disableTemperatureControl(), 1000);
           break;
       }
 
@@ -698,19 +746,25 @@ class TclAirConditioner {
   async setFanOn(value) {
     try {
       if (value) {
-        const properties = {
-          powerSwitch: 1,
-          workMode: 3,
-          windSpeed: 1
-        };
-        await this.platform.tclApi.setDeviceState(this.device.deviceId, properties);
-        this.log.info(`💨 FAN: Turned ON (switched to fan mode)`);
+        // Smart mode switching: Turn on fan automatically switches to AUTO mode
+        this.log.info(`💨 Fan ON: Smart switching to AUTO mode`);
+        await this.switchToFanMode();
       } else {
+        // Turn off fan = turn off everything
         const properties = {
           powerSwitch: 0
         };
         await this.platform.tclApi.setDeviceState(this.device.deviceId, properties);
-        this.log.info(`💨 FAN: Turned OFF`);
+        this.log.info(`💨 FAN: Turned OFF (device off)`);
+        
+        // Update main thermostat to show OFF
+        setTimeout(() => {
+          this.service.updateCharacteristic(
+            this.platform.api.hap.Characteristic.TargetHeatingCoolingState,
+            this.platform.api.hap.Characteristic.TargetHeatingCoolingState.OFF
+          );
+          this.enableTemperatureControl();
+        }, 500);
       }
     } catch (error) {
       this.log.error('❌ Error setting fan state:', error.message);
@@ -741,12 +795,17 @@ class TclAirConditioner {
 
   async setRotationSpeed(value) {
     try {
+      // Smart mode switching: Adjusting fan speed automatically switches to AUTO mode
       const currentState = await this.platform.tclApi.getDeviceState(this.device.deviceId);
       
-      if (currentState && currentState.workMode !== 3) {
-        this.log.warn('⚠️ Fan speed can only be set when AC is in Fan mode (Auto)');
-        return;
+      if (!currentState || currentState.workMode !== 3) {
+        this.log.info(`💨 Fan speed change: Smart switching to AUTO mode`);
+        await this.switchToFanMode();
+        // Give it a moment to switch modes before setting speed
+        await new Promise(resolve => setTimeout(resolve, 1000));
       }
+      
+      this.platform.tclApi.debug(`💨 Setting fan speed to ${value}%`);
       
       // Simple mapping: 0-50% = F1, 51-100% = F2
       let fanSpeed;
@@ -783,7 +842,7 @@ class TclAirConditioner {
             state.currentTemperature
           );
 
-          // Update main AC mode based on device state
+          // Update main AC mode based on device state - SMART DISPLAY
           let currentHeatingCoolingState;
           let targetHeatingCoolingState;
           
@@ -792,12 +851,12 @@ class TclAirConditioner {
             targetHeatingCoolingState = this.platform.api.hap.Characteristic.TargetHeatingCoolingState.OFF;
           } else {
             switch (state.workMode) {
-              case 0:
+              case 0: // AC Cooling mode
                 currentHeatingCoolingState = this.platform.api.hap.Characteristic.CurrentHeatingCoolingState.COOL;
                 targetHeatingCoolingState = this.platform.api.hap.Characteristic.TargetHeatingCoolingState.COOL;
                 break;
-              case 3:
-                currentHeatingCoolingState = this.platform.api.hap.Characteristic.CurrentHeatingCoolingState.OFF;
+              case 3: // Fan mode - shows as AUTO (fan only)
+                currentHeatingCoolingState = this.platform.api.hap.Characteristic.CurrentHeatingCoolingState.COOL;
                 targetHeatingCoolingState = this.platform.api.hap.Characteristic.TargetHeatingCoolingState.AUTO;
                 break;
               default:
