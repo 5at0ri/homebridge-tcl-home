@@ -471,7 +471,68 @@ class TclAirConditioner {
     this.setupCharacteristics();
     this.startPolling();
     
+    // ADD DIAGNOSTIC LINES:
+    this.log.info(`🔍 ${device.deviceName} constructor complete, starting diagnostics...`);
+    
+    // Check if polling actually starts
+    setTimeout(() => {
+      this.log.info(`🕐 10 seconds elapsed - checking connection status...`);
+      this.checkConnectionStatus();
+    }, 10000);
+    
     this.log.info(`🏠 ${device.deviceName} ready for HomeKit! (Combined AC + Fan)`);
+  }
+
+  // ADD THIS NEW METHOD:
+  async checkConnectionStatus() {
+    try {
+      this.log.info(`🔍 Connection Check:`);
+      this.log.info(`   - AWS IoT Data: ${this.platform.tclApi.iotData ? 'Connected' : 'NOT CONNECTED'}`);
+      this.log.info(`   - Last successful poll: ${this.lastSuccessfulPoll ? new Date(this.lastSuccessfulPoll).toLocaleTimeString() : 'NEVER'}`);
+      this.log.info(`   - Consecutive errors: ${this.consecutiveErrors}`);
+      
+      // Try to manually get device state
+      const state = await this.platform.tclApi.getDeviceState(this.device.deviceId);
+      this.log.info(`   - Manual state fetch: ${state ? 'SUCCESS' : 'FAILED'}`);
+      
+      if (state) {
+        this.log.info(`   - Device power: ${state.powerSwitch}, mode: ${state.workMode}, windSpeed: ${state.windSpeed}`);
+        this.log.info(`   - Device temp: current=${state.currentTemperature}°C, target=${state.targetTemperature}°C`);
+        
+        // Force an immediate HomeKit update with real state
+        this.log.info(`🔄 Forcing immediate HomeKit update...`);
+        this.service.updateCharacteristic(
+          this.platform.api.hap.Characteristic.CurrentTemperature,
+          state.currentTemperature
+        );
+        
+        // Update based on actual device state
+        if (state.powerSwitch === 1) {
+          if (state.workMode === 0) {
+            this.service.updateCharacteristic(
+              this.platform.api.hap.Characteristic.TargetHeatingCoolingState,
+              this.platform.api.hap.Characteristic.TargetHeatingCoolingState.COOL
+            );
+            this.log.info(`🔄 Updated HomeKit: AC COOL mode`);
+          } else if (state.workMode === 3) {
+            this.service.updateCharacteristic(
+              this.platform.api.hap.Characteristic.TargetHeatingCoolingState,
+              this.platform.api.hap.Characteristic.TargetHeatingCoolingState.AUTO
+            );
+            this.log.info(`🔄 Updated HomeKit: FAN mode`);
+          }
+        } else {
+          this.service.updateCharacteristic(
+            this.platform.api.hap.Characteristic.TargetHeatingCoolingState,
+            this.platform.api.hap.Characteristic.TargetHeatingCoolingState.OFF
+          );
+          this.log.info(`🔄 Updated HomeKit: OFF`);
+        }
+      }
+      
+    } catch (error) {
+      this.log.error(`❌ Connection check failed: ${error.message}`);
+    }
   }
 
   // AWS Error Recovery Helper Method
