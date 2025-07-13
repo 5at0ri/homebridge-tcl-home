@@ -483,7 +483,7 @@ class TclAirConditioner {
     this.log.info(`🏠 ${device.deviceName} ready for HomeKit! (Combined AC + Fan)`);
   }
 
-  // ADD THIS NEW METHOD:
+  // ENHANCED checkConnectionStatus with multiple fetch attempts:
   async checkConnectionStatus() {
     try {
       this.log.info(`🔍 Connection Check:`);
@@ -491,47 +491,122 @@ class TclAirConditioner {
       this.log.info(`   - Last successful poll: ${this.lastSuccessfulPoll ? new Date(this.lastSuccessfulPoll).toLocaleTimeString() : 'NEVER'}`);
       this.log.info(`   - Consecutive errors: ${this.consecutiveErrors}`);
       
-      // Try to manually get device state
-      const state = await this.platform.tclApi.getDeviceState(this.device.deviceId);
-      this.log.info(`   - Manual state fetch: ${state ? 'SUCCESS' : 'FAILED'}`);
+      // FORCE MULTIPLE STATE FETCHES to get the real current state
+      this.log.info(`🔄 Attempting multiple state fetches to get real device state...`);
       
-      if (state) {
-        this.log.info(`   - Device power: ${state.powerSwitch}, mode: ${state.workMode}, windSpeed: ${state.windSpeed}`);
-        this.log.info(`   - Device temp: current=${state.currentTemperature}°C, target=${state.targetTemperature}°C`);
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        this.log.info(`   📡 Fetch attempt ${attempt}/3...`);
         
-        // Force an immediate HomeKit update with real state
-        this.log.info(`🔄 Forcing immediate HomeKit update...`);
-        this.service.updateCharacteristic(
-          this.platform.api.hap.Characteristic.CurrentTemperature,
-          state.currentTemperature
-        );
-        
-        // Update based on actual device state
-        if (state.powerSwitch === 1) {
-          if (state.workMode === 0) {
-            this.service.updateCharacteristic(
-              this.platform.api.hap.Characteristic.TargetHeatingCoolingState,
-              this.platform.api.hap.Characteristic.TargetHeatingCoolingState.COOL
-            );
-            this.log.info(`🔄 Updated HomeKit: AC COOL mode`);
-          } else if (state.workMode === 3) {
-            this.service.updateCharacteristic(
-              this.platform.api.hap.Characteristic.TargetHeatingCoolingState,
-              this.platform.api.hap.Characteristic.TargetHeatingCoolingState.AUTO
-            );
-            this.log.info(`🔄 Updated HomeKit: FAN mode`);
+        try {
+          // Force a fresh fetch by bypassing any caching
+          const result = await this.platform.tclApi.iotData.getThingShadow({ 
+            thingName: this.device.deviceId 
+          }).promise();
+          
+          const shadowData = JSON.parse(result.payload.toString());
+          this.log.info(`   📊 Raw shadow data attempt ${attempt}: ${JSON.stringify(shadowData, null, 2)}`);
+          
+          if (shadowData && shadowData.state) {
+            const reported = shadowData.state.reported || {};
+            const desired = shadowData.state.desired || {};
+            
+            this.log.info(`   📊 Reported state: ${JSON.stringify(reported, null, 2)}`);
+            this.log.info(`   📊 Desired state: ${JSON.stringify(desired, null, 2)}`);
+            
+            // Build state from latest data
+            const freshState = {
+              powerSwitch: desired.powerSwitch !== undefined ? desired.powerSwitch : (reported.powerSwitch || 0),
+              targetTemperature: desired.targetCelsiusDegree !== undefined ? desired.targetCelsiusDegree : (reported.targetCelsiusDegree || reported.targetTemperature || 24),
+              currentTemperature: reported.currentTemperature || 22,
+              workMode: desired.workMode !== undefined ? desired.workMode : (reported.workMode || 0),
+              windSpeed: desired.windSpeed !== undefined ? desired.windSpeed : (reported.windSpeed || 0),
+              sleep: desired.sleep !== undefined ? desired.sleep : (reported.sleep || 0),
+              isOnline: true
+            };
+            
+            this.log.info(`   ✅ Fresh state attempt ${attempt}: power=${freshState.powerSwitch}, mode=${freshState.workMode}, windSpeed=${freshState.windSpeed}`);
+            
+            // If this looks different from what we got before, use it
+            if (freshState.workMode !== 2 || freshState.windSpeed !== 0) {
+              this.log.info(`   🎯 Found different state on attempt ${attempt}! Using this one.`);
+              await this.updateHomeKitWithState(freshState);
+              return; // Exit early, we found the real state
+            }
           }
-        } else {
-          this.service.updateCharacteristic(
-            this.platform.api.hap.Characteristic.TargetHeatingCoolingState,
-            this.platform.api.hap.Characteristic.TargetHeatingCoolingState.OFF
-          );
-          this.log.info(`🔄 Updated HomeKit: OFF`);
+          
+          // Wait between attempts
+          if (attempt < 3) {
+            await new Promise(resolve => setTimeout(resolve, 2000));
+          }
+          
+        } catch (error) {
+          this.log.error(`   ❌ Fetch attempt ${attempt} failed: ${error.message}`);
         }
       }
       
+      // If all attempts gave the same result, maybe that IS the real state
+      this.log.warn(`⚠️ All fetch attempts returned the same state - this might be correct`);
+      this.log.warn(`⚠️ Your AC might actually be in mode 2 with windSpeed 0`);
+      this.log.warn(`⚠️ Try checking the actual AC unit - what mode/speed does it show?`);
+      
     } catch (error) {
       this.log.error(`❌ Connection check failed: ${error.message}`);
+    }
+  }
+
+  // ADD this new helper method:
+  async updateHomeKitWithState(state) {
+    this.log.info(`🔄 Updating HomeKit with fresh state...`);
+    
+    // Update temperature
+    this.service.updateCharacteristic(
+      this.platform.api.hap.Characteristic.CurrentTemperature,
+      state.currentTemperature
+    );
+    
+    // Update AC mode
+    if (state.powerSwitch === 1) {
+      if (state.workMode === 0) {
+        this.service.updateCharacteristic(
+          this.platform.api.hap.Characteristic.TargetHeatingCoolingState,
+          this.platform.api.hap.Characteristic.TargetHeatingCoolingState.COOL
+        );
+        this.log.info(`✅ Updated: AC COOL mode`);
+      } else if (state.workMode === 3) {
+        this.service.updateCharacteristic(
+          this.platform.api.hap.Characteristic.TargetHeatingCoolingState,
+          this.platform.api.hap.Characteristic.TargetHeatingCoolingState.AUTO
+        );
+        this.log.info(`✅ Updated: FAN mode`);
+        
+        // Update fan controls for fan mode
+        this.fanService.updateCharacteristic(
+          this.platform.api.hap.Characteristic.On,
+          true
+        );
+        
+        let fanPercent = 50; // Default
+        switch (state.windSpeed) {
+          case 1: fanPercent = 100; break;
+          case 2: fanPercent = 50; break;
+          default: fanPercent = 50; break;
+        }
+        
+        this.fanService.updateCharacteristic(
+          this.platform.api.hap.Characteristic.RotationSpeed,
+          fanPercent
+        );
+        
+        this.log.info(`✅ Updated: Fan ON at ${fanPercent}% (windSpeed=${state.windSpeed})`);
+      } else {
+        this.log.warn(`⚠️ Unknown mode ${state.workMode} - treating as OFF`);
+      }
+    } else {
+      this.service.updateCharacteristic(
+        this.platform.api.hap.Characteristic.TargetHeatingCoolingState,
+        this.platform.api.hap.Characteristic.TargetHeatingCoolingState.OFF
+      );
+      this.log.info(`✅ Updated: OFF`);
     }
   }
 
