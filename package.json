@@ -1,7 +1,7 @@
 {
   "name": "homebridge-tcl-home",
-  "version": "1.0.23",
-  "description": "Homebridge plugin for TCL Home air conditioners - supports P09F4CSW1K and similar models",
+  "version": "1.1.0",
+  "description": "Homebridge plugin for TCL Home air conditioners with real-time updates - supports P09F4CSW1K and similar models",
   "main": "index.js",
   "scripts": {
     "test": "echo \"No tests specified\" && exit 0"
@@ -12,7 +12,9 @@
     "air-conditioner",
     "homekit",
     "smart-home",
-    "hvac"
+    "hvac",
+    "real-time",
+    "mqtt"
   ],
   "engines": {
     "node": ">=14.0.0",
@@ -21,7 +23,9 @@
   "dependencies": {
     "axios": "^1.6.0",
     "jsonwebtoken": "^9.0.0",
-    "aws-sdk": "^2.1400.0"
+    "aws-sdk": "^2.1400.0",
+    "mqtt": "^4.3.7",
+    "ws": "^8.13.0"
   },
   "repository": {
     "type": "git",
