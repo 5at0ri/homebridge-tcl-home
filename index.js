@@ -793,9 +793,9 @@ class TclAirConditioner {
       if (this.lockedMode === this.platform.api.hap.Characteristic.TargetHeatingCoolingState.AUTO) {
         // We're in locked fan mode - show the actual fan speed regardless of reported workMode
         switch (state.windSpeed) {
-          case 1: return 75;   // F1 = 75% (51-100% range) 
-          case 2: return 25;   // F2 = 25% (0-50% range)
-          default: return 75;
+          case 1: return 100;  // F1 = 100% (High speed)
+          case 2: return 50;   // F2 = 50% (Low speed)
+          default: return 100;
         }
       }
       
@@ -804,15 +804,15 @@ class TclAirConditioner {
         return 0; // Fan is off if not in fan mode
       }
       
-      // CORRECTED MAPPING: F1=75%, F2=25% (to match your working setup)
+      // FIXED MAPPING: F1=100% (High), F2=50% (Low)
       switch (state.windSpeed) {
-        case 1: return 75;   // F1 = 75% (51-100% range) 
-        case 2: return 25;   // F2 = 25% (0-50% range)
-        default: return 75;
+        case 1: return 100;  // F1 = 100% (High speed)
+        case 2: return 50;   // F2 = 50% (Low speed)
+        default: return 100;
       }
     } catch (error) {
       this.log.error('❌ Error getting fan rotation speed:', error.message);
-      return 75;
+      return 100;
     }
   }
 
@@ -847,16 +847,16 @@ class TclAirConditioner {
         await new Promise(resolve => setTimeout(resolve, 1000));
       }
       
-      // CORRECTED MAPPING WITH FIXED NAMES: 0-50% = F2, 51-100% = F1
+      // FIXED MAPPING: 0-75% = F2 (Low), 76-100% = F1 (High)
       let fanSpeed;
       let fanName;
       
-      if (value <= 50) {
+      if (value <= 75) {
         fanSpeed = 2;  // F2 hardware
-        fanName = 'F1 (Low)';  // Display as F1 (what user expects)
+        fanName = 'F2 (Low)';
       } else {
         fanSpeed = 1;  // F1 hardware  
-        fanName = 'F2 (High)';  // Display as F2 (what user expects)
+        fanName = 'F1 (High)';
       }
       
       const properties = {
@@ -956,7 +956,7 @@ class TclAirConditioner {
             state.sleep === 1
           );
 
-          // IMPROVED: Update fan controls based on locked mode + device state
+          // FIXED: Update fan controls based on locked mode + device state
           let isFanMode = false;
           let fanSpeedPercent = 0;
 
@@ -964,17 +964,17 @@ class TclAirConditioner {
             // Locked to AUTO and device is on - show fan as active
             isFanMode = true;
             switch (state.windSpeed) {
-              case 1: fanSpeedPercent = 75; break;   // F1 hardware = 75% display
-              case 2: fanSpeedPercent = 25; break;   // F2 hardware = 25% display
-              default: fanSpeedPercent = 75; break;
+              case 1: fanSpeedPercent = 100; break;  // F1 hardware = 100% display
+              case 2: fanSpeedPercent = 50; break;   // F2 hardware = 50% display
+              default: fanSpeedPercent = 100; break;
             }
           } else if (state.workMode === 3) {
             // Actually in fan mode
             isFanMode = true;
             switch (state.windSpeed) {
-              case 1: fanSpeedPercent = 75; break;
-              case 2: fanSpeedPercent = 25; break;
-              default: fanSpeedPercent = 75; break;
+              case 1: fanSpeedPercent = 100; break;  // F1 hardware = 100% display
+              case 2: fanSpeedPercent = 50; break;   // F2 hardware = 50% display
+              default: fanSpeedPercent = 100; break;
             }
           }
 
