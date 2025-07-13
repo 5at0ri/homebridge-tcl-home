@@ -759,14 +759,30 @@ class TclFan {
   async setFanOn(value) {
     try {
       if (value) {
-        // Turn on fan mode
+        // Turn on fan mode with extra debugging
+        this.log.info(`💨 FAN: Turning ON - switching to fan mode`);
         const properties = {
           powerSwitch: 1,
           workMode: 3,
           windSpeed: 1  // Default to F1
         };
-        await this.platform.tclApi.setDeviceState(this.device.deviceId, properties);
-        this.log.info(`💨 FAN: Turned ON (fan mode activated)`);
+        
+        const success = await this.platform.tclApi.setDeviceState(this.device.deviceId, properties);
+        if (success) {
+          this.log.info(`💨 FAN: Successfully activated fan mode (workMode: 3)`);
+          
+          // Verify the state change took effect
+          setTimeout(async () => {
+            const verifyState = await this.platform.tclApi.getDeviceState(this.device.deviceId);
+            this.log.info(`💨 FAN: Verification - Power: ${verifyState.powerSwitch}, Mode: ${verifyState.workMode}, Speed: ${verifyState.windSpeed}`);
+            
+            if (verifyState.workMode !== 3) {
+              this.log.warn(`⚠️ FAN: Device rejected fan mode! Expected workMode 3, got ${verifyState.workMode}`);
+            }
+          }, 2000);
+        } else {
+          this.log.error(`❌ FAN: Failed to activate fan mode`);
+        }
       } else {
         // Turn off everything
         const properties = {
@@ -788,15 +804,15 @@ class TclFan {
         return 0; // Fan is off if not in fan mode
       }
       
-      // SIMPLE CORRECT MAPPING: F1=25%, F2=75%
+      // REVERSED MAPPING: F1=75%, F2=25% (opposite of what I had)
       switch (state.windSpeed) {
-        case 1: return 25;   // F1 = 25% (in 0-50% range)
-        case 2: return 75;   // F2 = 75% (in 51-100% range)
-        default: return 25;
+        case 1: return 75;   // F1 = 75% (51-100% range)
+        case 2: return 25;   // F2 = 25% (0-50% range)
+        default: return 75;
       }
     } catch (error) {
       this.log.error('❌ Error getting fan rotation speed:', error.message);
-      return 25;
+      return 75;
     }
   }
 
@@ -818,16 +834,16 @@ class TclFan {
         await new Promise(resolve => setTimeout(resolve, 1000));
       }
       
-      // SIMPLE CORRECT MAPPING: 0-50% = F1, 51-100% = F2
+      // REVERSED MAPPING: 0-50% = F2, 51-100% = F1
       let fanSpeed;
       let fanName;
       
       if (value <= 50) {
-        fanSpeed = 1;  // F1 (Low)
-        fanName = 'F1 (Low)';
-      } else {
         fanSpeed = 2;  // F2 (High)
         fanName = 'F2 (High)';
+      } else {
+        fanSpeed = 1;  // F1 (Low)
+        fanName = 'F1 (Low)';
       }
       
       const properties = {
@@ -854,13 +870,13 @@ class TclFan {
             state.powerSwitch === 1 && isFanMode
           );
 
-          // Update fan speed - SIMPLE CORRECT MAPPING
+          // Update fan speed - REVERSED MAPPING
           let fanSpeedPercent = 0;
           if (isFanMode) {
             switch (state.windSpeed) {
-              case 1: fanSpeedPercent = 25; break;   // F1 = 25% (0-50% range)
-              case 2: fanSpeedPercent = 75; break;   // F2 = 75% (51-100% range)
-              default: fanSpeedPercent = 25; break;
+              case 1: fanSpeedPercent = 75; break;   // F1 = 75% (51-100% range)
+              case 2: fanSpeedPercent = 25; break;   // F2 = 25% (0-50% range)
+              default: fanSpeedPercent = 75; break;
             }
           }
           
@@ -874,6 +890,6 @@ class TclFan {
       } catch (error) {
         this.platform.tclApi.debug('🔄 Fan polling update:', error.message);
       }
-    }, 10000); // Faster polling for better state tracking
+    }, 5000); // Even faster polling to catch state changes quickly
   }
 }
