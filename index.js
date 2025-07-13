@@ -829,4 +829,3 @@ startPolling() {
   }, 15000);
 }
 }
-EOF
