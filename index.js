@@ -237,9 +237,167 @@ class TclHomeApi {
       });
 
       this.log.info('✅ AWS IoT Data client configured successfully');
+      
+      // Setup real-time MQTT WebSocket connection
+      await this.setupMqttWebSocket();
     } catch (error) {
       this.log.error('❌ Failed to setup AWS IoT:', error.message);
     }
+  }
+
+  async getMqttEndpoint() {
+    const url = `${this.cloudUrlsData.data.cloud_url}/v3/global/mqtt_endpoint_get`;
+    
+    const timestamp = Date.now().toString();
+    const nonce = Math.random().toString(36).substr(2, 16);
+    const sign = this.calculateMd5Hash(timestamp + nonce + this.refreshTokensData.data.saasToken);
+
+    const headers = {
+      'platform': 'android',
+      'appversion': '5.4.1',
+      'thomeversion': '4.8.1',
+      'accesstoken': this.refreshTokensData.data.saasToken,
+      'countrycode': this.authData.user.countryAbbr,
+      'accept-language': 'en',
+      'timestamp': timestamp,
+      'nonce': nonce,
+      'sign': sign,
+      'user-agent': 'Android',
+      'content-type': 'application/json; charset=UTF-8'
+    };
+
+    try {
+      const response = await axios.post(url, {}, { headers });
+      return response.data.data.mqttEndpoint;
+    } catch (error) {
+      this.log.error('❌ Failed to get MQTT endpoint:', error.message);
+      // Fallback to the endpoint you found
+      const region = this.cloudUrlsData.data.cloud_region;
+      return `wss://a2qjkbbsk6qn2u-ats.iot.${region}.amazonaws.com:8883`;
+    }
+  }
+
+  async setupMqttWebSocket() {
+    try {
+      const WebSocket = require('ws');
+      const mqtt = require('mqtt');
+      
+      const mqttEndpoint = await this.getMqttEndpoint();
+      this.debug(`🔗 Connecting to MQTT WebSocket: ${mqttEndpoint}`);
+      
+      // Create MQTT client with AWS IoT credentials
+      const mqttOptions = {
+        protocol: 'wss',
+        accessKeyId: this.awsCredentials.Credentials.AccessKeyId,
+        secretAccessKey: this.awsCredentials.Credentials.SecretKey,
+        sessionToken: this.awsCredentials.Credentials.SessionToken,
+        region: this.cloudUrlsData.data.cloud_region,
+        clean: true,
+        keepalive: 30
+      };
+
+      this.mqttClient = mqtt.connect(mqttEndpoint, mqttOptions);
+      
+      this.mqttClient.on('connect', () => {
+        this.log.info('✅ Real-time MQTT WebSocket connected!');
+        this.subscribedDevices = new Set();
+      });
+
+      this.mqttClient.on('error', (error) => {
+        this.debug('🔌 MQTT WebSocket error:', error.message);
+        // Try to reconnect after a delay
+        setTimeout(() => this.setupMqttWebSocket(), 30000);
+      });
+
+      this.mqttClient.on('close', () => {
+        this.debug('🔌 MQTT WebSocket disconnected, will attempt reconnect...');
+        setTimeout(() => this.setupMqttWebSocket(), 10000);
+      });
+
+      this.mqttClient.on('message', (topic, message) => {
+        try {
+          const data = JSON.parse(message.toString());
+          this.handleMqttMessage(topic, data);
+        } catch (error) {
+          this.debug('❌ Failed to parse MQTT message:', error.message);
+        }
+      });
+
+    } catch (error) {
+      this.log.error('❌ Failed to setup MQTT WebSocket:', error.message);
+    }
+  }
+
+  handleMqttMessage(topic, data) {
+    this.debug(`📨 MQTT message on ${topic}:`, JSON.stringify(data, null, 2));
+    
+    // Extract device ID from topic
+    const deviceIdMatch = topic.match(/\$aws\/things\/([^\/]+)\/shadow/);
+    if (!deviceIdMatch) return;
+    
+    const deviceId = deviceIdMatch[1];
+    
+    // Handle shadow updates
+    if (topic.includes('/shadow/update/') && data.state) {
+      this.log.info(`🔄 Real-time update for device ${deviceId}`);
+      
+      // Update our cache with the latest state
+      const reported = data.state.reported || {};
+      const desired = data.state.desired || {};
+      
+      const newState = {
+        powerSwitch: desired.powerSwitch !== undefined ? desired.powerSwitch : (reported.powerSwitch || 0),
+        targetTemperature: desired.targetCelsiusDegree !== undefined ? desired.targetCelsiusDegree : (reported.targetCelsiusDegree || reported.targetTemperature || 24),
+        currentTemperature: reported.currentTemperature || 22,
+        workMode: desired.workMode !== undefined ? desired.workMode : (reported.workMode || 0),
+        windSpeed: desired.windSpeed !== undefined ? desired.windSpeed : (reported.windSpeed || 1),
+        sleep: desired.sleep !== undefined ? desired.sleep : (reported.sleep || 0),
+        isOnline: true
+      };
+      
+      // Update cache
+      this.currentDeviceState[deviceId] = newState;
+      
+      // Notify accessories of the real-time update
+      if (this.onDeviceUpdate) {
+        this.onDeviceUpdate(deviceId, newState);
+      }
+      
+      this.log.info(`📱 AC changed directly: Power=${newState.powerSwitch}, Mode=${newState.workMode}, WindSpeed=${newState.windSpeed}`);
+    }
+  }
+
+  subscribeToDevice(deviceId, callback) {
+    if (!this.mqttClient || !this.mqttClient.connected) {
+      this.debug('⚠️ MQTT client not connected, cannot subscribe to device updates');
+      return;
+    }
+
+    if (this.subscribedDevices.has(deviceId)) {
+      this.debug(`📱 Already subscribed to device ${deviceId}`);
+      return;
+    }
+
+    const topics = [
+      `$aws/things/${deviceId}/shadow/update/accepted`,
+      `$aws/things/${deviceId}/shadow/update/delta`,
+      `$aws/things/${deviceId}/shadow/get/accepted`
+    ];
+
+    topics.forEach(topic => {
+      this.mqttClient.subscribe(topic, (err) => {
+        if (err) {
+          this.debug(`❌ Failed to subscribe to ${topic}:`, err.message);
+        } else {
+          this.debug(`✅ Subscribed to real-time updates: ${topic}`);
+        }
+      });
+    });
+
+    this.subscribedDevices.add(deviceId);
+    this.onDeviceUpdate = callback;
+    
+    this.log.info(`📱 Real-time updates enabled for ${deviceId}`);
   }
 
   async getDevices() {
@@ -467,6 +625,9 @@ class TclAirConditioner {
     this.setupCharacteristics();
     this.startPolling();
     
+    // Subscribe to real-time MQTT updates
+    this.setupRealTimeUpdates();
+    
     this.platform.tclApi.debug(`🔍 ${device.deviceName} constructor complete, starting diagnostics...`);
     
     setTimeout(() => {
@@ -474,7 +635,118 @@ class TclAirConditioner {
       this.checkConnectionStatus();
     }, 10000);
     
-    this.log.info(`🏠 ${device.deviceName} ready for HomeKit! (Combined AC + Fan)`);
+    this.log.info(`🏠 ${device.deviceName} ready for HomeKit! (Combined AC + Fan + Real-time)`);
+  }
+
+  setupRealTimeUpdates() {
+    // Wait a bit for MQTT to be ready, then subscribe
+    setTimeout(() => {
+      this.platform.tclApi.subscribeToDevice(this.device.deviceId, (deviceId, newState) => {
+        this.handleRealTimeUpdate(newState);
+      });
+    }, 5000);
+  }
+
+  handleRealTimeUpdate(state) {
+    this.log.info(`🔄 REAL-TIME: AC changed directly - updating HomeKit immediately`);
+    
+    // Reset user-set speeds when device changes directly
+    this.lastUserSetSpeed = undefined;
+    
+    // Update current temperature immediately
+    this.service.updateCharacteristic(
+      this.platform.api.hap.Characteristic.CurrentTemperature,
+      state.currentTemperature
+    );
+
+    // Handle mode changes from the physical AC
+    if (!this.lockedMode || (Date.now() - (this.lastModeChange || 0)) > 10000) {
+      // Only update if not locked, or if it's been 10+ seconds since last manual change
+      
+      let targetState;
+      if (!state.powerSwitch) {
+        targetState = this.platform.api.hap.Characteristic.TargetHeatingCoolingState.OFF;
+        this.lockedMode = undefined; // Clear lock when turned off
+      } else {
+        switch (state.workMode) {
+          case 0:
+            targetState = this.platform.api.hap.Characteristic.TargetHeatingCoolingState.COOL;
+            this.lockedMode = undefined; // Clear lock for AC mode
+            break;
+          case 2:
+          case 3:
+            targetState = this.platform.api.hap.Characteristic.TargetHeatingCoolingState.AUTO;
+            // Don't clear lock for fan modes - they might be intentionally locked
+            break;
+          default:
+            targetState = this.platform.api.hap.Characteristic.TargetHeatingCoolingState.OFF;
+            this.lockedMode = undefined;
+            break;
+        }
+      }
+
+      this.service.updateCharacteristic(
+        this.platform.api.hap.Characteristic.TargetHeatingCoolingState,
+        targetState
+      );
+      
+      this.log.info(`🔄 REAL-TIME: Updated to ${targetState === 0 ? 'OFF' : targetState === 1 ? 'HEAT' : targetState === 2 ? 'COOL' : 'AUTO'}`);
+    } else {
+      this.platform.tclApi.debug(`🔒 REAL-TIME: Mode locked, ignoring device mode change`);
+    }
+
+    // Update current heating/cooling state
+    let currentState;
+    if (!state.powerSwitch) {
+      currentState = this.platform.api.hap.Characteristic.CurrentHeatingCoolingState.OFF;
+    } else {
+      currentState = this.platform.api.hap.Characteristic.CurrentHeatingCoolingState.COOL;
+    }
+    
+    this.service.updateCharacteristic(
+      this.platform.api.hap.Characteristic.CurrentHeatingCoolingState,
+      currentState
+    );
+
+    // Update temperature controls
+    if (state.workMode === 3 || state.workMode === 2) {
+      this.disableTemperatureControl();
+    } else {
+      this.enableTemperatureControl();
+    }
+
+    // Update sleep mode
+    this.sleepService.updateCharacteristic(
+      this.platform.api.hap.Characteristic.On,
+      state.sleep === 1
+    );
+
+    // Update fan controls for real-time changes
+    let isFanMode = (state.workMode === 3 || state.workMode === 2) && state.powerSwitch === 1;
+    let fanSpeedPercent = 0;
+
+    if (isFanMode) {
+      switch (state.windSpeed) {
+        case 1: fanSpeedPercent = 100; break;
+        case 2: fanSpeedPercent = 50; break;
+        case 0: fanSpeedPercent = 50; break; // 50% fallback
+        default: fanSpeedPercent = 50; break;
+      }
+    }
+    
+    this.fanService.updateCharacteristic(
+      this.platform.api.hap.Characteristic.On,
+      isFanMode
+    );
+    
+    this.fanService.updateCharacteristic(
+      this.platform.api.hap.Characteristic.RotationSpeed,
+      fanSpeedPercent
+    );
+    
+    this.log.info(`🔄 REAL-TIME: Fan ${isFanMode ? 'ON' : 'OFF'} at ${fanSpeedPercent}% (windSpeed=${state.windSpeed})`);
+    
+    this.platform.tclApi.debug(`🔄 REAL-TIME complete: Power=${state.powerSwitch}, Mode=${state.workMode}, Fan=${fanSpeedPercent}%`);
   }
 
   async checkConnectionStatus() {
