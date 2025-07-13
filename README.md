@@ -6,17 +6,17 @@ A Homebridge plugin for TCL Home air conditioners that brings your AC units into
 
 Currently tested and working with:
 - TCL P09F4CSW1K Portable Air Conditioner
-- Likely compatible with other TCL Home app devices but will need tweaking for it
+- Likely compatible with other TCL Home app A/Cs but will need tweaking for it
 
 ## Features
 
 - 🌡️ Temperature control (18-30°C)
 - ❄️ Cooling mode control
-- 💨 Fan mode with speed control (Auto/Low/High)
+- 💨 Fan mode with speed control (Low/High)
 - 😴 Sleep mode toggle
-- 📱 Full HomeKit integration
+- 📱 HomeKit integration (mostly)
 - 🏠 Siri voice control
-- 🔄 Bidirectional sync (device changes reflect in HomeKit)
+- 🔄 Bidirectional sync (device changes reflect in HomeKit - semi working)
 
 ## Installation
 
@@ -35,23 +35,6 @@ npm install -g homebridge-tcl-home
 
 ```
 
-## Configuration
-
-Add this platform to your Homebridge config:
-
-```json
-{
-  "platforms": [
-    {
-      "platform": "TclHome",
-      "name": "TCL Home",
-      "username": "your.email@example.com",
-      "password": "your_password",
-      "debugMode": false
-    }
-  ]
-}
-```
 ### Configuration Options
 
 | Option | Required | Description |
@@ -79,8 +62,7 @@ Your AC should appear in the Home app automatically!
 
 ### Additional Controls
 - **Sleep Mode Switch**: Toggle sleep mode
-- **Fan Switch**: Independent fan mode
-- **Fan Speed**: Auto (25%), Low (50%), High (100%)
+- **Fan Speed**: Low (50%), High (100%)
 
 ## Troubleshooting
 
