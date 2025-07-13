@@ -463,7 +463,7 @@ class TclAirConditioner {
     this.setupCharacteristics();
     this.startPolling();
     
-    this.log.info(`🏠 ${device.deviceName} ready for HomeKit!`);
+    this.log.info(`🏠 ${device.deviceName} ready for HomeKit! (AC only - no fan controls)`);
   }
 
   setupCharacteristics() {
@@ -479,7 +479,7 @@ class TclAirConditioner {
         validValues: [
           Characteristic.TargetHeatingCoolingState.OFF,   
           Characteristic.TargetHeatingCoolingState.COOL
-          // Only OFF and COOL - no confusing AUTO mode
+          // ONLY OFF and COOL - no AUTO, no fan controls
         ]
       });
 
@@ -706,7 +706,7 @@ class TclAirConditioner {
       } catch (error) {
         this.platform.tclApi.debug('🔄 AC polling update:', error.message);
       }
-    }, 15000);
+    }, 10000); // Faster polling for better AC state tracking
   }
 }
 
@@ -788,15 +788,15 @@ class TclFan {
         return 0; // Fan is off if not in fan mode
       }
       
-      // FIXED MAPPING: F1=50%, F2=100%
+      // SIMPLE CORRECT MAPPING: F1=25%, F2=75%
       switch (state.windSpeed) {
-        case 1: return 50;   // F1 = 50% in HomeKit
-        case 2: return 100;  // F2 = 100% in HomeKit  
-        default: return 50;
+        case 1: return 25;   // F1 = 25% (in 0-50% range)
+        case 2: return 75;   // F2 = 75% (in 51-100% range)
+        default: return 25;
       }
     } catch (error) {
       this.log.error('❌ Error getting fan rotation speed:', error.message);
-      return 50;
+      return 25;
     }
   }
 
@@ -818,7 +818,7 @@ class TclFan {
         await new Promise(resolve => setTimeout(resolve, 1000));
       }
       
-      // FIXED MAPPING: 1-50% = F1, 51-100% = F2
+      // SIMPLE CORRECT MAPPING: 0-50% = F1, 51-100% = F2
       let fanSpeed;
       let fanName;
       
@@ -835,7 +835,7 @@ class TclFan {
       };
       
       await this.platform.tclApi.setDeviceState(this.device.deviceId, properties);
-      this.log.info(`💨 FAN SPEED: Set to ${fanName} (${value}% in HomeKit)`);
+      this.log.info(`💨 FAN SPEED: Set to ${fanName} (${value}% → F${fanSpeed})`);
     } catch (error) {
       this.log.error('❌ Error setting fan rotation speed:', error.message);
       throw new this.platform.api.hap.HapStatusError(this.platform.api.hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE);
@@ -854,13 +854,13 @@ class TclFan {
             state.powerSwitch === 1 && isFanMode
           );
 
-          // Update fan speed
+          // Update fan speed - SIMPLE CORRECT MAPPING
           let fanSpeedPercent = 0;
           if (isFanMode) {
             switch (state.windSpeed) {
-              case 1: fanSpeedPercent = 50; break;   // F1 = 50%
-              case 2: fanSpeedPercent = 100; break;  // F2 = 100%
-              default: fanSpeedPercent = 50; break;
+              case 1: fanSpeedPercent = 25; break;   // F1 = 25% (0-50% range)
+              case 2: fanSpeedPercent = 75; break;   // F2 = 75% (51-100% range)
+              default: fanSpeedPercent = 25; break;
             }
           }
           
@@ -869,11 +869,11 @@ class TclFan {
             fanSpeedPercent
           );
           
-          this.platform.tclApi.debug(`🔄 FAN Synced: Power=${state.powerSwitch}, Mode=${state.workMode}, Speed=${fanSpeedPercent}%`);
+          this.platform.tclApi.debug(`🔄 FAN Synced: Power=${state.powerSwitch}, Mode=${state.workMode}, Speed=${fanSpeedPercent}% (F${state.windSpeed})`);
         }
       } catch (error) {
         this.platform.tclApi.debug('🔄 Fan polling update:', error.message);
       }
-    }, 15000);
+    }, 10000); // Faster polling for better state tracking
   }
 }
