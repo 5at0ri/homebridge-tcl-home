@@ -978,21 +978,35 @@ async getRotationSpeed() {
           if (this.lockedMode === this.platform.api.hap.Characteristic.TargetHeatingCoolingState.AUTO && state.powerSwitch === 1) {
             // Locked to AUTO and device is on - show fan as active
             isFanMode = true;
-            switch (state.windSpeed) {
-              case 1: fanSpeedPercent = 100; break;  // F1 hardware = 100% display
-              case 2: fanSpeedPercent = 50; break;   // F2 hardware = 50% display
-              default: fanSpeedPercent = 100; break;
+            
+            // If user manually set a speed, keep showing that instead of device feedback
+            if (this.lastUserSetSpeed !== undefined) {
+              fanSpeedPercent = this.lastUserSetSpeed;
+            } else {
+              // Otherwise show standard mapping
+              switch (state.windSpeed) {
+                case 1: fanSpeedPercent = 100; break;  // F1 hardware = 100% display
+                case 2: fanSpeedPercent = 50; break;   // F2 hardware = 50% display
+                default: fanSpeedPercent = 100; break;
+              }
             }
           } else if (state.workMode === 3) {
             // Actually in fan mode
             isFanMode = true;
-            switch (state.windSpeed) {
-              case 1: fanSpeedPercent = 100; break;  // F1 hardware = 100% display
-              case 2: fanSpeedPercent = 50; break;   // F2 hardware = 50% display
-              default: fanSpeedPercent = 100; break;
+            
+            // If user manually set a speed, keep showing that
+            if (this.lastUserSetSpeed !== undefined) {
+              fanSpeedPercent = this.lastUserSetSpeed;
+            } else {
+              // Otherwise show standard mapping
+              switch (state.windSpeed) {
+                case 1: fanSpeedPercent = 100; break;  // F1 hardware = 100% display
+                case 2: fanSpeedPercent = 50; break;   // F2 hardware = 50% display
+                default: fanSpeedPercent = 100; break;
+              }
             }
           }
-
+          
           this.fanService.updateCharacteristic(
             this.platform.api.hap.Characteristic.On,
             state.powerSwitch === 1 && isFanMode
