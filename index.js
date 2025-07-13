@@ -69,6 +69,8 @@ class TclHomePlatform {
       this.api.registerPlatformAccessories('homebridge-tcl-home', 'TclHome', [accessory]);
       this.accessories.push(accessory);
     }
+    
+    // REMOVED: No separate fan accessory creation - everything is unified now
   }
 
   configureAccessory(accessory) {
@@ -583,6 +585,9 @@ class TclAirConditioner {
       const Characteristic = this.platform.api.hap.Characteristic;
       let properties = {};
 
+      // Mark when we manually change the mode to prevent polling override
+      this.lastModeChange = Date.now();
+
       switch (value) {
         case Characteristic.TargetHeatingCoolingState.OFF:
           properties = { 
@@ -614,14 +619,14 @@ class TclAirConditioner {
             workMode: 3,
             windSpeed: 1  // Start with F1
           };
-          this.log.info(`💨 Setting AC to AUTO mode (Fan only)`);
+          this.log.info(`💨 Setting AC to AUTO mode (Fan only) - will stay in AUTO`);
           // Disable temperature control in fan mode
           setTimeout(() => this.disableTemperatureControl(), 500);
           break;
       }
 
       await this.platform.tclApi.setDeviceState(this.device.deviceId, properties);
-      this.log.info(`🎯 Set heating/cooling state to ${value}`);
+      this.log.info(`🎯 Set heating/cooling state to ${value} - mode locked for 5 seconds`);
     } catch (error) {
       this.log.error('❌ Error setting target state:', error.message);
       throw new this.platform.api.hap.HapStatusError(this.platform.api.hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE);
@@ -720,6 +725,9 @@ class TclAirConditioner {
 
   async setFanOn(value) {
     try {
+      // Mark when we manually change the mode
+      this.lastModeChange = Date.now();
+      
       if (value) {
         // Turn on fan = switch to AUTO mode
         this.log.info(`💨 FAN: Turning ON - switching to AUTO mode`);
@@ -739,7 +747,7 @@ class TclAirConditioner {
           this.disableTemperatureControl();
         }, 500);
         
-        this.log.info(`💨 FAN: ON (AUTO mode activated)`);
+        this.log.info(`💨 FAN: ON (AUTO mode activated - locked)`);
       } else {
         // Turn off fan = turn off everything
         const properties = {
@@ -785,6 +793,9 @@ class TclAirConditioner {
 
   async setRotationSpeed(value) {
     try {
+      // Mark when we manually change the mode
+      this.lastModeChange = Date.now();
+      
       // Auto-switch to fan mode if not already
       const currentState = await this.platform.tclApi.getDeviceState(this.device.deviceId);
       
@@ -827,7 +838,7 @@ class TclAirConditioner {
       };
       
       await this.platform.tclApi.setDeviceState(this.device.deviceId, properties);
-      this.log.info(`💨 FAN SPEED: Set to ${fanName} (${value}% → hardware F${fanSpeed})`);
+      this.log.info(`💨 FAN SPEED: Set to ${fanName} (${value}% → hardware F${fanSpeed}) - AUTO mode locked`);
     } catch (error) {
       this.log.error('❌ Error setting fan rotation speed:', error.message);
       throw new this.platform.api.hap.HapStatusError(this.platform.api.hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE);
@@ -845,40 +856,44 @@ class TclAirConditioner {
             state.currentTemperature
           );
 
-          // Update main AC mode
-          let currentHeatingCoolingState;
-          let targetHeatingCoolingState;
-          
-          if (!state.powerSwitch) {
-            currentHeatingCoolingState = this.platform.api.hap.Characteristic.CurrentHeatingCoolingState.OFF;
-            targetHeatingCoolingState = this.platform.api.hap.Characteristic.TargetHeatingCoolingState.OFF;
-          } else {
-            switch (state.workMode) {
-              case 0: // AC Cooling mode
-                currentHeatingCoolingState = this.platform.api.hap.Characteristic.CurrentHeatingCoolingState.COOL;
-                targetHeatingCoolingState = this.platform.api.hap.Characteristic.TargetHeatingCoolingState.COOL;
-                break;
-              case 3: // Fan mode - shows as AUTO
-                currentHeatingCoolingState = this.platform.api.hap.Characteristic.CurrentHeatingCoolingState.COOL;
-                targetHeatingCoolingState = this.platform.api.hap.Characteristic.TargetHeatingCoolingState.AUTO;
-                break;
-              default:
-                currentHeatingCoolingState = this.platform.api.hap.Characteristic.CurrentHeatingCoolingState.OFF;
-                targetHeatingCoolingState = this.platform.api.hap.Characteristic.TargetHeatingCoolingState.OFF;
-                break;
+          // FIXED: Don't override mode if it was just set - check for recent mode changes
+          const now = Date.now();
+          if (!this.lastModeChange || (now - this.lastModeChange) > 5000) {
+            // Only update mode if no recent manual changes (5 second buffer)
+            let currentHeatingCoolingState;
+            let targetHeatingCoolingState;
+            
+            if (!state.powerSwitch) {
+              currentHeatingCoolingState = this.platform.api.hap.Characteristic.CurrentHeatingCoolingState.OFF;
+              targetHeatingCoolingState = this.platform.api.hap.Characteristic.TargetHeatingCoolingState.OFF;
+            } else {
+              switch (state.workMode) {
+                case 0: // AC Cooling mode
+                  currentHeatingCoolingState = this.platform.api.hap.Characteristic.CurrentHeatingCoolingState.COOL;
+                  targetHeatingCoolingState = this.platform.api.hap.Characteristic.TargetHeatingCoolingState.COOL;
+                  break;
+                case 3: // Fan mode - shows as AUTO
+                  currentHeatingCoolingState = this.platform.api.hap.Characteristic.CurrentHeatingCoolingState.COOL;
+                  targetHeatingCoolingState = this.platform.api.hap.Characteristic.TargetHeatingCoolingState.AUTO;
+                  break;
+                default:
+                  currentHeatingCoolingState = this.platform.api.hap.Characteristic.CurrentHeatingCoolingState.OFF;
+                  targetHeatingCoolingState = this.platform.api.hap.Characteristic.TargetHeatingCoolingState.OFF;
+                  break;
+              }
             }
-          }
 
-          // Update both current and target heating/cooling states
-          this.service.updateCharacteristic(
-            this.platform.api.hap.Characteristic.CurrentHeatingCoolingState,
-            currentHeatingCoolingState
-          );
-          
-          this.service.updateCharacteristic(
-            this.platform.api.hap.Characteristic.TargetHeatingCoolingState,
-            targetHeatingCoolingState
-          );
+            // Update both current and target heating/cooling states
+            this.service.updateCharacteristic(
+              this.platform.api.hap.Characteristic.CurrentHeatingCoolingState,
+              currentHeatingCoolingState
+            );
+            
+            this.service.updateCharacteristic(
+              this.platform.api.hap.Characteristic.TargetHeatingCoolingState,
+              targetHeatingCoolingState
+            );
+          }
 
           // Handle temperature control permissions based on mode
           if (state.workMode === 3) {
