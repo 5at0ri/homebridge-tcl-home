@@ -430,6 +430,10 @@ class TclAirConditioner {
     this.device = device;
     this.log = platform.log;
     
+    // AWS Error Recovery & Connection Health Monitoring
+    this.consecutiveErrors = 0;  // Track connection health
+    this.lastSuccessfulPoll = Date.now();  // Track last successful poll
+    
     this.accessory.getService(this.platform.api.hap.Service.AccessoryInformation)
       .setCharacteristic(this.platform.api.hap.Characteristic.Manufacturer, 'TCL')
       .setCharacteristic(this.platform.api.hap.Characteristic.Model, 'P09F4CSW1K Portable AC')
@@ -468,6 +472,31 @@ class TclAirConditioner {
     this.startPolling();
     
     this.log.info(`🏠 ${device.deviceName} ready for HomeKit! (Combined AC + Fan)`);
+  }
+
+  // AWS Error Recovery Helper Method
+  async executeWithAWSRetry(operation, context = '') {
+    try {
+      return await operation();
+    } catch (error) {
+      // Check for AWS auth errors in any operation
+      if (error.message.includes('Forbidden') || 
+          error.message.includes('Credentials') || 
+          error.message.includes('expired') ||
+          error.message.includes('InvalidToken')) {
+        this.log.warn(`🔄 AWS error in ${context}, re-authenticating...`);
+        await this.platform.tclApi.handleAuthExpiry();
+        
+        // Retry once after re-auth
+        try {
+          return await operation();
+        } catch (retryError) {
+          this.log.error(`❌ ${context} failed even after re-auth:`, retryError.message);
+          throw retryError;
+        }
+      }
+      throw error; // Re-throw non-AWS errors
+    }
   }
 
   setupCharacteristics() {
@@ -626,7 +655,10 @@ class TclAirConditioner {
           break;
       }
 
-      await this.platform.tclApi.setDeviceState(this.device.deviceId, properties);
+      await this.executeWithAWSRetry(
+        () => this.platform.tclApi.setDeviceState(this.device.deviceId, properties),
+        'setTargetHeatingCoolingState'
+      );
       this.log.info(`🎯 Set heating/cooling state to ${value} - mode LOCKED until manually changed`);
     } catch (error) {
       this.log.error('❌ Error setting target state:', error.message);
@@ -672,7 +704,10 @@ class TclAirConditioner {
       };
 
       this.log.info(`🌡️ Setting temperature to ${temperature}°C`);
-      await this.platform.tclApi.publishDeviceShadow(this.device.deviceId, payload);
+      await this.executeWithAWSRetry(
+        () => this.platform.tclApi.publishDeviceShadow(this.device.deviceId, payload),
+        'setTargetTemperature'
+      );
 
       // Update cache
       if (!this.platform.tclApi.currentDeviceState[this.device.deviceId]) {
@@ -706,7 +741,10 @@ class TclAirConditioner {
         sleep: value ? 1 : 0
       };
       
-      await this.platform.tclApi.setDeviceState(this.device.deviceId, properties);
+      await this.executeWithAWSRetry(
+        () => this.platform.tclApi.setDeviceState(this.device.deviceId, properties),
+        'setSleepMode'
+      );
       this.log.info(`😴 SLEEP MODE: ${value ? 'ON' : 'OFF'}`);
     } catch (error) {
       this.log.error('❌ Error setting sleep mode:', error.message);
@@ -745,7 +783,10 @@ class TclAirConditioner {
           workMode: 3,
           windSpeed: 2  // Default to F1
         };
-        await this.platform.tclApi.setDeviceState(this.device.deviceId, properties);
+        await this.executeWithAWSRetry(
+          () => this.platform.tclApi.setDeviceState(this.device.deviceId, properties),
+          'setFanOn'
+        );
         
         // Update main thermostat to show AUTO
         setTimeout(() => {
@@ -763,7 +804,10 @@ class TclAirConditioner {
         const properties = {
           powerSwitch: 0
         };
-        await this.platform.tclApi.setDeviceState(this.device.deviceId, properties);
+        await this.executeWithAWSRetry(
+          () => this.platform.tclApi.setDeviceState(this.device.deviceId, properties),
+          'setFanOff'
+        );
         
         // Update main thermostat to show OFF
         setTimeout(() => {
@@ -782,7 +826,7 @@ class TclAirConditioner {
     }
   }
 
-async getRotationSpeed() {
+  async getRotationSpeed() {
     try {
       const state = await this.platform.tclApi.getDeviceState(this.device.deviceId);
       if (!state || !state.powerSwitch) {
@@ -847,7 +891,10 @@ async getRotationSpeed() {
           workMode: 3,
           windSpeed: 2
         };
-        await this.platform.tclApi.setDeviceState(this.device.deviceId, modeProperties);
+        await this.executeWithAWSRetry(
+          () => this.platform.tclApi.setDeviceState(this.device.deviceId, modeProperties),
+          'setRotationSpeed-autoSwitch'
+        );
         
         // Update main thermostat
         setTimeout(() => {
@@ -878,7 +925,10 @@ async getRotationSpeed() {
         windSpeed: fanSpeed
       };
       
-      await this.platform.tclApi.setDeviceState(this.device.deviceId, properties);
+      await this.executeWithAWSRetry(
+        () => this.platform.tclApi.setDeviceState(this.device.deviceId, properties),
+        'setRotationSpeed'
+      );
       this.log.info(`💨 FAN SPEED: Set to ${fanName} (${value}% → hardware F${fanSpeed}) - USER SET ${value}% - AUTO mode LOCKED permanently`);
     } catch (error) {
       this.log.error('❌ Error setting fan rotation speed:', error.message);
@@ -891,6 +941,10 @@ async getRotationSpeed() {
       try {
         const state = await this.platform.tclApi.getDeviceState(this.device.deviceId);
         if (state) {
+          // Reset error tracking on successful poll
+          this.consecutiveErrors = 0;
+          this.lastSuccessfulPoll = Date.now();
+          
           // Update current temperature
           this.service.updateCharacteristic(
             this.platform.api.hap.Characteristic.CurrentTemperature,
@@ -1022,6 +1076,33 @@ async getRotationSpeed() {
         }
       } catch (error) {
         this.platform.tclApi.debug('🔄 Polling update:', error.message);
+        
+        // AWS Error Recovery & Connection Health Monitoring
+        this.consecutiveErrors++;
+        
+        // Check for AWS authentication issues
+        if (error.message.includes('Forbidden') || 
+            error.message.includes('Credentials') || 
+            error.message.includes('expired') ||
+            error.message.includes('InvalidToken')) {
+          this.log.warn('🔄 AWS credentials issue detected, re-authenticating...');
+          await this.platform.tclApi.handleAuthExpiry();
+          this.consecutiveErrors = 0; // Reset on auth attempt
+          return;
+        }
+        
+        // Check for multiple consecutive failures
+        if (this.consecutiveErrors >= 3) {
+          this.log.warn(`🔄 ${this.consecutiveErrors} consecutive failures detected, triggering re-authentication`);
+          await this.platform.tclApi.handleAuthExpiry();
+          this.consecutiveErrors = 0; // Reset after auth attempt
+        }
+        
+        // Log connection health status
+        const timeSinceLastSuccess = Date.now() - this.lastSuccessfulPoll;
+        if (timeSinceLastSuccess > 60000) { // 1 minute
+          this.log.warn(`🔌 Connection degraded: ${Math.round(timeSinceLastSuccess/1000)}s since last successful poll`);
+        }
       }
     }, 8000); // 8-second polling for good responsiveness
   }
