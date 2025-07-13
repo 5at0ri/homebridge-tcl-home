@@ -1,6 +1,6 @@
 {
   "name": "homebridge-tcl-home",
-  "version": "1.0.12",
+  "version": "1.0.13",
   "description": "Homebridge plugin for TCL Home air conditioners - supports P09F4CSW1K and similar models",
   "main": "index.js",
   "scripts": {
