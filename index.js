@@ -587,6 +587,7 @@ class TclAirConditioner {
 
       // Mark when we manually change the mode to prevent polling override
       this.lastModeChange = Date.now();
+      this.lockedMode = value; // Remember what mode we set
 
       switch (value) {
         case Characteristic.TargetHeatingCoolingState.OFF:
@@ -619,14 +620,14 @@ class TclAirConditioner {
             workMode: 3,
             windSpeed: 1  // Start with F1
           };
-          this.log.info(`💨 Setting AC to AUTO mode (Fan only) - will stay in AUTO`);
+          this.log.info(`💨 Setting AC to AUTO mode (Fan only) - LOCKED permanently`);
           // Disable temperature control in fan mode
           setTimeout(() => this.disableTemperatureControl(), 500);
           break;
       }
 
       await this.platform.tclApi.setDeviceState(this.device.deviceId, properties);
-      this.log.info(`🎯 Set heating/cooling state to ${value} - mode locked for 5 seconds`);
+      this.log.info(`🎯 Set heating/cooling state to ${value} - mode LOCKED until manually changed`);
     } catch (error) {
       this.log.error('❌ Error setting target state:', error.message);
       throw new this.platform.api.hap.HapStatusError(this.platform.api.hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE);
@@ -730,6 +731,7 @@ class TclAirConditioner {
       
       if (value) {
         // Turn on fan = switch to AUTO mode
+        this.lockedMode = this.platform.api.hap.Characteristic.TargetHeatingCoolingState.AUTO;
         this.log.info(`💨 FAN: Turning ON - switching to AUTO mode`);
         const properties = {
           powerSwitch: 1,
@@ -747,9 +749,10 @@ class TclAirConditioner {
           this.disableTemperatureControl();
         }, 500);
         
-        this.log.info(`💨 FAN: ON (AUTO mode activated - locked)`);
+        this.log.info(`💨 FAN: ON (AUTO mode activated - LOCKED permanently)`);
       } else {
         // Turn off fan = turn off everything
+        this.lockedMode = this.platform.api.hap.Characteristic.TargetHeatingCoolingState.OFF;
         const properties = {
           powerSwitch: 0
         };
@@ -800,6 +803,7 @@ class TclAirConditioner {
       const currentState = await this.platform.tclApi.getDeviceState(this.device.deviceId);
       
       if (!currentState || currentState.workMode !== 3) {
+        this.lockedMode = this.platform.api.hap.Characteristic.TargetHeatingCoolingState.AUTO;
         this.log.info(`💨 FAN SPEED: Auto-switching to fan mode`);
         const modeProperties = {
           powerSwitch: 1,
@@ -838,7 +842,7 @@ class TclAirConditioner {
       };
       
       await this.platform.tclApi.setDeviceState(this.device.deviceId, properties);
-      this.log.info(`💨 FAN SPEED: Set to ${fanName} (${value}% → hardware F${fanSpeed}) - AUTO mode locked`);
+      this.log.info(`💨 FAN SPEED: Set to ${fanName} (${value}% → hardware F${fanSpeed}) - AUTO mode LOCKED permanently`);
     } catch (error) {
       this.log.error('❌ Error setting fan rotation speed:', error.message);
       throw new this.platform.api.hap.HapStatusError(this.platform.api.hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE);
@@ -856,10 +860,30 @@ class TclAirConditioner {
             state.currentTemperature
           );
 
-          // FIXED: Don't override mode if it was just set - check for recent mode changes
-          const now = Date.now();
-          if (!this.lastModeChange || (now - this.lastModeChange) > 5000) {
-            // Only update mode if no recent manual changes (5 second buffer)
+          // IMPROVED: Use locked mode if set, otherwise use device state
+          if (this.lockedMode !== undefined) {
+            // Mode is locked - force HomeKit to show the locked mode
+            this.service.updateCharacteristic(
+              this.platform.api.hap.Characteristic.TargetHeatingCoolingState,
+              this.lockedMode
+            );
+            
+            // Set current state based on locked mode
+            let currentState;
+            if (this.lockedMode === this.platform.api.hap.Characteristic.TargetHeatingCoolingState.OFF) {
+              currentState = this.platform.api.hap.Characteristic.CurrentHeatingCoolingState.OFF;
+            } else {
+              currentState = this.platform.api.hap.Characteristic.CurrentHeatingCoolingState.COOL;
+            }
+            
+            this.service.updateCharacteristic(
+              this.platform.api.hap.Characteristic.CurrentHeatingCoolingState,
+              currentState
+            );
+            
+            this.platform.tclApi.debug(`🔒 Mode LOCKED: ${this.lockedMode} (overriding device state)`);
+          } else {
+            // No locked mode - use normal device state logic
             let currentHeatingCoolingState;
             let targetHeatingCoolingState;
             
@@ -883,7 +907,6 @@ class TclAirConditioner {
               }
             }
 
-            // Update both current and target heating/cooling states
             this.service.updateCharacteristic(
               this.platform.api.hap.Characteristic.CurrentHeatingCoolingState,
               currentHeatingCoolingState
