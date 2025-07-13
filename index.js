@@ -313,10 +313,10 @@ class TclHomeApi {
   getFallbackDeviceState(deviceId) {
     return this.currentDeviceState[deviceId] || {
       powerSwitch: 0,
-      targetTemperature: 24,
+      targetTemperature: 18,
       currentTemperature: 22,
       workMode: 0,
-      windSpeed: 1,
+      windSpeed: 2,
       sleep: 0,
       isOnline: false
     };
@@ -618,7 +618,7 @@ class TclAirConditioner {
           properties = {
             powerSwitch: 1,
             workMode: 3,
-            windSpeed: 1  // Start with F1
+            windSpeed: 2  // Start with F1
           };
           this.log.info(`💨 Setting AC to AUTO mode (Fan only) - LOCKED permanently`);
           // Disable temperature control in fan mode
@@ -743,7 +743,7 @@ class TclAirConditioner {
         const properties = {
           powerSwitch: 1,
           workMode: 3,
-          windSpeed: 1  // Default to F1
+          windSpeed: 2  // Default to F1
         };
         await this.platform.tclApi.setDeviceState(this.device.deviceId, properties);
         
@@ -800,9 +800,9 @@ async getRotationSpeed() {
         
         // Otherwise show based on device state
         switch (state.windSpeed) {
-          case 1: return 100;  // F1 = 100% (High speed)
-          case 2: return 50;   // F2 = 50% (Low speed)
-          default: return 100;
+          case 1: return 100;  // F2 = 100% (High speed)
+          case 2: return 50;   // F1 = 50% (Low speed)
+          default: return 50;
         }
       }
       
@@ -845,7 +845,7 @@ async getRotationSpeed() {
         const modeProperties = {
           powerSwitch: 1,
           workMode: 3,
-          windSpeed: 1
+          windSpeed: 2
         };
         await this.platform.tclApi.setDeviceState(this.device.deviceId, modeProperties);
         
@@ -985,9 +985,9 @@ async getRotationSpeed() {
             } else {
               // Otherwise show standard mapping
               switch (state.windSpeed) {
-                case 1: fanSpeedPercent = 100; break;  // F1 hardware = 100% display
-                case 2: fanSpeedPercent = 50; break;   // F2 hardware = 50% display
-                default: fanSpeedPercent = 100; break;
+                case 1: fanSpeedPercent = 100; break;  // F2 hardware = 100% display
+                case 2: fanSpeedPercent = 50; break;   // F1 hardware = 50% display
+                default: fanSpeedPercent = 50; break;
               }
             }
           } else if (state.workMode === 3) {
@@ -1000,8 +1000,8 @@ async getRotationSpeed() {
             } else {
               // Otherwise show standard mapping
               switch (state.windSpeed) {
-                case 1: fanSpeedPercent = 100; break;  // F1 hardware = 100% display
-                case 2: fanSpeedPercent = 50; break;   // F2 hardware = 50% display
+                case 1: fanSpeedPercent = 100; break;  // F2 hardware = 100% display
+                case 2: fanSpeedPercent = 50; break;   // F1 hardware = 50% display
                 default: fanSpeedPercent = 100; break;
               }
             }
