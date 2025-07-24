@@ -93,6 +93,7 @@ class TclHomeApi {
     this.refreshTokensData = null;
     this.awsCredentials = null;
     this.currentDeviceState = {};
+    this.lastStateCall = {};
     this.iotData = null;
     this.iotClient = null;
     this.subscriptions = new Map();
@@ -282,6 +283,14 @@ class TclHomeApi {
 
   async getDeviceState(deviceId) {
     try {
+      // Rate limiting: only call once per 3 seconds per device
+      const now = Date.now();
+      if (this.lastStateCall[deviceId] && (now - this.lastStateCall[deviceId]) < 3000) {
+        this.debug(`Rate limited getDeviceState for ${deviceId}`);
+        return this.getFallbackDeviceState(deviceId);
+      }
+      this.lastStateCall[deviceId] = now;
+      
       if (!this.iotData) {
         this.log.error('❌ AWS IoT Data client not initialized');
         return this.getFallbackDeviceState(deviceId);
@@ -588,6 +597,7 @@ class TclAirConditioner {
     // Live update tracking
     this.lastDeviceUpdate = 0;
     this.pendingUpdates = false;
+    this.lastHomeKitUpdate = 0;
     
     // Separate fan speed contexts
     this.coolModeFanSpeed = 1; // F1 for cool mode
@@ -659,16 +669,19 @@ class TclAirConditioner {
     this.setupLiveUpdates();
     this.startPolling(); // Keep as backup but reduce frequency
     
-    this.log.info(`🏠 ${device.deviceName} ready for HomeKit! (Live updates + Separate Fan Controls)`);
+    this.log.info(`🏠 ${device.deviceName} ready for HomeKit! (Polling + Separate Fan Controls)`);
   }
 
   async setupLiveUpdates() {
     try {
-      await this.platform.tclApi.subscribeToDeviceUpdates(
-        this.device.deviceId, 
-        (state) => this.handleLiveUpdate(state)
-      );
-      this.log.info(`📡 Live updates enabled for ${this.device.deviceName}`);
+      // Disable live updates temporarily due to AWS IoT connection issues
+      // TODO: Fix AWS IoT WebSocket authentication
+      this.log.info(`📡 Live updates disabled (using polling fallback) for ${this.device.deviceName}`);
+      
+      // await this.platform.tclApi.subscribeToDeviceUpdates(
+      //   this.device.deviceId, 
+      //   (state) => this.handleLiveUpdate(state)
+      // );
     } catch (error) {
       this.log.warn('⚠️ Could not setup live updates, using polling fallback:', error.message);
     }
@@ -688,6 +701,14 @@ class TclAirConditioner {
   }
   
   updateHomeKitFromState(state) {
+    // Debounce HomeKit updates to prevent spam
+    const now = Date.now();
+    if (now - this.lastHomeKitUpdate < 2000) {
+      this.platform.tclApi.debug('🚫 Skipping HomeKit update (debounced)');
+      return;
+    }
+    this.lastHomeKitUpdate = now;
+    
     // Update current temperature
     this.service.updateCharacteristic(
       this.platform.api.hap.Characteristic.CurrentTemperature,
@@ -1363,18 +1384,11 @@ class TclAirConditioner {
   }
   
   startPolling() {
-    // Reduced polling frequency since we have live updates
+    // Use normal polling frequency since live updates are disabled
     setInterval(async () => {
       try {
         const state = await this.platform.tclApi.getDeviceState(this.device.deviceId);
         if (state) {
-          // Skip update if we recently got a live update
-          const timeSinceLastUpdate = Date.now() - this.lastDeviceUpdate;
-          if (timeSinceLastUpdate < 5000) {
-            this.platform.tclApi.debug('🗑️ Skipping polling update (recent live update)');
-            return;
-          }
-          
           // Reset error tracking on successful poll
           this.consecutiveErrors = 0;
           this.lastSuccessfulPoll = Date.now();
@@ -1414,6 +1428,6 @@ class TclAirConditioner {
           this.log.warn(`🔌 Connection degraded: ${Math.round(timeSinceLastSuccess/1000)}s since last successful poll`);
         }
       }
-    }, 30000); // 30-second polling as backup (live updates handle real-time)
+    }, 10000); // 10-second polling
   }
 }
