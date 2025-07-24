@@ -384,7 +384,7 @@ class TclHomeApi {
         qos: 1
       };
 
-      const result = await this.iotData.publish(params).promise();
+      await this.iotData.publish(params).promise();
       this.log.info(`✅ Successfully published to AWS IoT`);
       return true;
     } catch (error) {
@@ -438,10 +438,9 @@ class TclHomeApi {
       }
       
       const mqtt = require('mqtt');
-      const crypto = require('crypto');
       
       const region = this.cloudUrlsData.data.cloud_region;
-      const endpoint = `wss://data-iot.${region}.amazonaws.com/mqtt`;
+      const endpoint = `wss://data-ats.iot.${region}.amazonaws.com/mqtt`;
       
       // Create signed WebSocket URL for AWS IoT Core
       const signedUrl = this.createSignedWebSocketUrl(endpoint, region);
@@ -616,9 +615,15 @@ class TclAirConditioner {
       .onGet(this.getSleepMode.bind(this))
       .onSet(this.setSleepMode.bind(this));
 
+    // Remove old services if they exist with wrong subtypes
+    const oldFanService = this.accessory.getService('Fan Speed');
+    if (oldFanService) {
+      this.accessory.removeService(oldFanService);
+    }
+
     // Fan mode controls (Auto mode)
     this.fanService = this.accessory.getService('Fan Mode') ||
-                     this.accessory.addService(this.platform.api.hap.Service.Fan, 'Fan Mode', 'fan');
+                     this.accessory.addService(this.platform.api.hap.Service.Fan, 'Fan Mode', 'fanMode');
 
     this.fanService.getCharacteristic(this.platform.api.hap.Characteristic.On)
       .onGet(this.getFanOn.bind(this))
@@ -635,7 +640,7 @@ class TclAirConditioner {
 
     // Cool mode fan controls (separate from Fan mode)
     this.coolFanService = this.accessory.getService('Cool Fan Speed') ||
-                         this.accessory.addService(this.platform.api.hap.Service.Fan, 'Cool Fan Speed', 'coolFan');
+                         this.accessory.addService(this.platform.api.hap.Service.Fan, 'Cool Fan Speed', 'coolFanSpeed');
 
     this.coolFanService.getCharacteristic(this.platform.api.hap.Characteristic.On)
       .onGet(this.getCoolFanOn.bind(this))
@@ -708,6 +713,7 @@ class TclAirConditioner {
       
       switch (state.workMode) {
         case 0: // Cool mode
+        case 2: // Another cool mode variant
           targetState = this.platform.api.hap.Characteristic.TargetHeatingCoolingState.COOL;
           this.enableTemperatureControl();
           break;
@@ -762,14 +768,14 @@ class TclAirConditioner {
     }
     
     // Update cool fan controls (Cool mode)
-    const isCoolFanOn = state.powerSwitch === 1 && state.workMode === 0;
+    const isCoolFanOn = state.powerSwitch === 1 && (state.workMode === 0 || state.workMode === 2);
     this.coolFanService.updateCharacteristic(
       this.platform.api.hap.Characteristic.On,
       isCoolFanOn
     );
     
     if (isCoolFanOn) {
-      // Cool mode speeds: F1=100%, F2=50%
+      // Cool mode speeds: F1=100%, F2/Auto=50%
       const coolFanSpeed = state.windSpeed === 1 ? 100 : 50;
       this.coolFanService.updateCharacteristic(
         this.platform.api.hap.Characteristic.RotationSpeed,
@@ -887,6 +893,7 @@ class TclAirConditioner {
       
       switch (state.workMode) {
         case 0:
+        case 2: // Another cool mode variant
           return this.platform.api.hap.Characteristic.CurrentHeatingCoolingState.COOL;
         case 3:
           // Fan mode shows as running (COOL) not off
@@ -909,6 +916,7 @@ class TclAirConditioner {
       
       switch (state.workMode) {
         case 0:
+        case 2: // Another cool mode variant
           return this.platform.api.hap.Characteristic.TargetHeatingCoolingState.COOL;
         case 3:
           return this.platform.api.hap.Characteristic.TargetHeatingCoolingState.AUTO;
@@ -1207,7 +1215,7 @@ class TclAirConditioner {
   async getCoolFanOn() {
     try {
       const state = await this.platform.tclApi.getDeviceState(this.device.deviceId);
-      return state ? (state.powerSwitch === 1 && state.workMode === 0) : false;
+      return state ? (state.powerSwitch === 1 && (state.workMode === 0 || state.workMode === 2)) : false;
     } catch (error) {
       this.log.error('❌ Error getting cool fan state:', error.message);
       return false;
@@ -1273,19 +1281,20 @@ class TclAirConditioner {
   async getCoolFanSpeed() {
     try {
       const state = await this.platform.tclApi.getDeviceState(this.device.deviceId);
-      if (!state || !state.powerSwitch || state.workMode !== 0) {
+      if (!state || !state.powerSwitch || (state.workMode !== 0 && state.workMode !== 2)) {
         return 0; // Cool fan is off if device is off or not in cool mode
       }
       
-      // Cool mode mapping: F1=100% (High), F2=50% (Low)
+      // Cool mode mapping: F1=100% (High), F2/Auto=50% (Low)
       switch (state.windSpeed) {
         case 1: return 100;  // F1 = 100% (High speed)
-        case 2: return 50;   // F2 = 50% (Low speed)
-        default: return 100;
+        case 2:
+        case 0:
+        default: return 50;   // F2/Auto = 50% (Low speed)
       }
     } catch (error) {
       this.log.error('❌ Error getting cool fan speed:', error.message);
-      return 100;
+      return 50;
     }
   }
 
@@ -1294,11 +1303,11 @@ class TclAirConditioner {
       // Auto-switch to cool mode if not already
       const currentState = await this.platform.tclApi.getDeviceState(this.device.deviceId);
       
-      if (!currentState || currentState.workMode !== 0) {
+      if (!currentState || (currentState.workMode !== 0 && currentState.workMode !== 2)) {
         this.log.info(`❄️ COOL FAN SPEED: Auto-switching to cool mode`);
         const modeProperties = {
           powerSwitch: 1,
-          workMode: 0,
+          workMode: 0, // Use mode 0 (standard cool)
           windSpeed: this.coolModeFanSpeed,
           ECO: 0,
           sleep: 0,
