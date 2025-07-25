@@ -283,9 +283,9 @@ class TclHomeApi {
 
   async getDeviceState(deviceId) {
     try {
-      // Rate limiting: only call once per 1 second per device
+      // Light rate limiting: only call once per 500ms per device (allow more frequent calls)
       const now = Date.now();
-      if (this.lastStateCall[deviceId] && (now - this.lastStateCall[deviceId]) < 1000) {
+      if (this.lastStateCall[deviceId] && (now - this.lastStateCall[deviceId]) < 500) {
         this.debug(`Rate limited getDeviceState for ${deviceId}`);
         return this.getFallbackDeviceState(deviceId);
       }
@@ -598,6 +598,7 @@ class TclAirConditioner {
     this.lastDeviceUpdate = 0;
     this.pendingUpdates = false;
     this.lastHomeKitUpdate = 0;
+    this.lastKnownState = {};
     
     // Separate fan speed contexts
     this.coolModeFanSpeed = 1; // F1 for cool mode
@@ -665,9 +666,8 @@ class TclAirConditioner {
 
   async setupLiveUpdates() {
     try {
-      // Disable live updates temporarily due to AWS IoT connection issues
-      // TODO: Fix AWS IoT WebSocket authentication
-      this.log.info(`📡 Live updates disabled (using polling fallback) for ${this.device.deviceName}`);
+      // AWS IoT live updates disabled - using optimized polling instead  
+      this.log.info(`📡 Using 5-second polling for live updates: ${this.device.deviceName}`);
       
       // await this.platform.tclApi.subscribeToDeviceUpdates(
       //   this.device.deviceId, 
@@ -692,9 +692,22 @@ class TclAirConditioner {
   }
   
   updateHomeKitFromState(state) {
-    // Debounce HomeKit updates to prevent spam
+    // Check for actual changes to avoid unnecessary updates
+    const stateKey = `${state.powerSwitch}-${state.workMode}-${state.windSpeed}-${state.currentTemperature}-${state.targetTemperature}-${state.sleep}`;
+    if (this.lastKnownState.key === stateKey) {
+      this.platform.tclApi.debug('🔄 No state changes detected, skipping update');
+      return;
+    }
+    
+    // Log state changes for debugging
+    if (this.lastKnownState.key) {
+      this.log.info(`📈 State changed: Power=${state.powerSwitch}, Mode=${state.workMode}, Wind=${state.windSpeed}, Temp=${state.currentTemperature}°C`);
+    }
+    this.lastKnownState = { key: stateKey, ...state };
+    
+    // Light debouncing for HomeKit updates (allow more frequent updates for responsiveness)
     const now = Date.now();
-    if (now - this.lastHomeKitUpdate < 1000) {
+    if (now - this.lastHomeKitUpdate < 200) {
       this.platform.tclApi.debug('🚫 Skipping HomeKit update (debounced)');
       return;
     }
@@ -714,26 +727,28 @@ class TclAirConditioner {
       );
     }
     
-    // Update heating/cooling states
+    // Update heating/cooling states with proper logic
     let currentState, targetState;
     
     if (!state.powerSwitch) {
       currentState = this.platform.api.hap.Characteristic.CurrentHeatingCoolingState.OFF;
       targetState = this.platform.api.hap.Characteristic.TargetHeatingCoolingState.OFF;
     } else {
-      currentState = this.platform.api.hap.Characteristic.CurrentHeatingCoolingState.COOL;
-      
+      // Current state - what the device is actually doing
       switch (state.workMode) {
         case 0: // Cool mode
         case 2: // Another cool mode variant
+          currentState = this.platform.api.hap.Characteristic.CurrentHeatingCoolingState.COOL;
           targetState = this.platform.api.hap.Characteristic.TargetHeatingCoolingState.COOL;
           this.enableTemperatureControl();
           break;
         case 3: // Fan mode
+          currentState = this.platform.api.hap.Characteristic.CurrentHeatingCoolingState.COOL; // HomeKit uses COOL for active fan
           targetState = this.platform.api.hap.Characteristic.TargetHeatingCoolingState.AUTO;
           this.disableTemperatureControl();
           break;
         default:
+          currentState = this.platform.api.hap.Characteristic.CurrentHeatingCoolingState.OFF;
           targetState = this.platform.api.hap.Characteristic.TargetHeatingCoolingState.OFF;
           break;
       }
@@ -748,6 +763,8 @@ class TclAirConditioner {
       this.platform.api.hap.Characteristic.TargetHeatingCoolingState,
       targetState
     );
+    
+    this.platform.tclApi.debug(`🔄 Mode update: Device=${state.workMode}, HomeKit Target=${targetState === 3 ? 'AUTO' : targetState === 1 ? 'COOL' : 'OFF'}`);
     
     // Update sleep mode
     this.sleepService.updateCharacteristic(
@@ -1200,7 +1217,7 @@ class TclAirConditioner {
           // Use the live update handler for consistency
           this.updateHomeKitFromState(state);
           
-          this.platform.tclApi.debug(`🔄 Polling sync: Power=${state.powerSwitch}, Mode=${state.workMode}, WindSpeed=${state.windSpeed}`);
+          this.platform.tclApi.debug(`🔄 Polling sync: Power=${state.powerSwitch}, Mode=${state.workMode}, WindSpeed=${state.windSpeed}, Temp=${state.currentTemperature}°C`);
         }
       } catch (error) {
         this.platform.tclApi.debug('🔄 Polling update:', error.message);
@@ -1232,6 +1249,6 @@ class TclAirConditioner {
           this.log.warn(`🔌 Connection degraded: ${Math.round(timeSinceLastSuccess/1000)}s since last successful poll`);
         }
       }
-    }, 10000); // 10-second polling
+    }, 5000); // 5-second polling for better responsiveness
   }
 }
