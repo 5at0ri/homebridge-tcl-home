@@ -744,18 +744,17 @@ class TclAirConditioner {
     } else {
       // Current state - what the device is actually doing
       switch (state.workMode) {
-        case 1: // Cool mode  
+        case 0: // AC cooling mode (now maps to HomeKit COOL)
           currentState = this.platform.api.hap.Characteristic.CurrentHeatingCoolingState.COOL;
           targetState = this.platform.api.hap.Characteristic.TargetHeatingCoolingState.COOL;
           this.enableTemperatureControl();
           break;
-        case 0: // Auto mode = Fan mode (simplified mapping)
-        case 2: // Fan mode 
-        case 3: // Fan mode alternate
+        case 2: // Pure fan mode (now maps to HomeKit AUTO)
           currentState = this.platform.api.hap.Characteristic.CurrentHeatingCoolingState.COOL; // HomeKit uses COOL for active fan
           targetState = this.platform.api.hap.Characteristic.TargetHeatingCoolingState.AUTO;
           this.disableTemperatureControl();
           break;
+        // Skip workMode 1 and 3 (dehumidify modes we don't want)
         default:
           currentState = this.platform.api.hap.Characteristic.CurrentHeatingCoolingState.OFF;
           targetState = this.platform.api.hap.Characteristic.TargetHeatingCoolingState.OFF;
@@ -782,7 +781,7 @@ class TclAirConditioner {
     );
     
     // Update single intelligent fan control
-    const isFanActive = state.powerSwitch === 1 && (state.workMode === 0 || state.workMode === 1 || state.workMode === 2 || state.workMode === 3);
+    const isFanActive = state.powerSwitch === 1 && (state.workMode === 0 || state.workMode === 2);
     this.fanService.updateCharacteristic(
       this.platform.api.hap.Characteristic.On,
       isFanActive
@@ -804,9 +803,9 @@ class TclAirConditioner {
       );
       
       // Store speed in appropriate context
-      if (state.workMode === 0 || state.workMode === 2) {
+      if (state.workMode === 2) {
         this.fanModeFanSpeed = state.windSpeed;
-      } else if (state.workMode === 1) {
+      } else if (state.workMode === 0) {
         this.coolModeFanSpeed = state.windSpeed;
       }
     } else {
@@ -917,13 +916,12 @@ class TclAirConditioner {
       }
       
       switch (state.workMode) {
-        case 1: // Cool mode
+        case 0: // AC cooling mode (maps to HomeKit COOL)
           return this.platform.api.hap.Characteristic.CurrentHeatingCoolingState.COOL;
-        case 0: // Auto mode = Fan mode (simplified mapping)
-        case 2: // Fan mode 
-        case 3: // Fan mode alternate
+        case 2: // Pure fan mode (maps to HomeKit AUTO)
           // Fan mode shows as running (COOL) not off
           return this.platform.api.hap.Characteristic.CurrentHeatingCoolingState.COOL;
+        // Skip workMode 1 and 3 (dehumidify modes we don't want)
         default:
           return this.platform.api.hap.Characteristic.CurrentHeatingCoolingState.OFF;
       }
@@ -941,12 +939,11 @@ class TclAirConditioner {
       }
       
       switch (state.workMode) {
-        case 1: // Cool mode
+        case 0: // AC cooling mode (maps to HomeKit COOL)
           return this.platform.api.hap.Characteristic.TargetHeatingCoolingState.COOL;
-        case 0: // Auto mode = Fan mode (simplified mapping)
-        case 2: // Fan mode 
-        case 3: // Fan mode alternate
+        case 2: // Pure fan mode (maps to HomeKit AUTO)
           return this.platform.api.hap.Characteristic.TargetHeatingCoolingState.AUTO;
+        // Skip workMode 1 and 3 (dehumidify modes we don't want)
         default:
           return this.platform.api.hap.Characteristic.TargetHeatingCoolingState.OFF;
       }
@@ -973,24 +970,24 @@ class TclAirConditioner {
         case Characteristic.TargetHeatingCoolingState.COOL:
           properties = {
             powerSwitch: 1,
-            workMode: 1, // Use mode 1 for cool (was 0)
+            workMode: 0, // Use mode 0 for AC cooling
             windSpeed: this.coolModeFanSpeed, // Use saved cool mode speed
             ECO: 0,
             sleep: 0,
             turbo: 0,
             silenceSwitch: 0
           };
-          this.log.info(`❄️ Setting AC to COOL mode with saved fan speed F${this.coolModeFanSpeed}`);
+          this.log.info(`❄️ Setting AC to COOL mode (AC cooling) with saved fan speed F${this.coolModeFanSpeed}`);
           this.enableTemperatureControl();
           break;
           
         case Characteristic.TargetHeatingCoolingState.AUTO:
           properties = {
             powerSwitch: 1,
-            workMode: 0, // Use mode 0 for auto/fan (simplified mapping)
+            workMode: 2, // Use mode 2 for pure fan mode
             windSpeed: this.fanModeFanSpeed  // Use saved fan mode speed
           };
-          this.log.info(`💨 Setting AC to AUTO/FAN mode with saved fan speed F${this.fanModeFanSpeed}`);
+          this.log.info(`💨 Setting AC to AUTO mode (pure fan) with saved fan speed F${this.fanModeFanSpeed}`);
           this.disableTemperatureControl();
           break;
       }
@@ -1095,8 +1092,8 @@ class TclAirConditioner {
   async getFanOn() {
     try {
       const state = await this.platform.tclApi.getDeviceState(this.device.deviceId);
-      // Fan is "on" when device is powered and has a fan running (any mode with fan)
-      return state ? (state.powerSwitch === 1 && (state.workMode === 0 || state.workMode === 1 || state.workMode === 2 || state.workMode === 3)) : false;
+      // Fan is "on" when device is powered and in supported modes (AC cooling or pure fan)
+      return state ? (state.powerSwitch === 1 && (state.workMode === 0 || state.workMode === 2)) : false;
     } catch (error) {
       this.log.error('❌ Error getting fan state:', error.message);
       return false;
@@ -1110,11 +1107,11 @@ class TclAirConditioner {
         const currentState = await this.platform.tclApi.getDeviceState(this.device.deviceId);
         
         if (!currentState || !currentState.powerSwitch) {
-          // Device is off, turn on in auto/fan mode (mode 0)
-          this.log.info(`💨 AC FAN: Turning ON device in auto/fan mode`);
+          // Device is off, turn on in pure fan mode (mode 2)
+          this.log.info(`💨 AC FAN: Turning ON device in pure fan mode`);
           const properties = {
             powerSwitch: 1,
-            workMode: 0, // Auto mode = fan mode (simplified)
+            workMode: 2, // Pure fan mode
             windSpeed: this.fanModeFanSpeed
           };
           await this.executeWithAWSRetry(
@@ -1149,8 +1146,8 @@ class TclAirConditioner {
         return 0; // Fan is off if device is off
       }
       
-      // Show fan speed for any mode that has a fan (Auto, Cool, Fan, etc.)
-      if (state.workMode === 0 || state.workMode === 1 || state.workMode === 2 || state.workMode === 3) {
+      // Show fan speed for supported modes only (AC cooling and pure fan)
+      if (state.workMode === 0 || state.workMode === 2) {
         // Context-aware mapping: F1=100% (High), F2/Auto=50% (Low)
         switch (state.windSpeed) {
           case 1: return 100;  // F1 = 100% (High speed)
@@ -1189,16 +1186,17 @@ class TclAirConditioner {
       }
       
       // Context-aware speed setting based on current mode
-      if (currentState.workMode === 0 || currentState.workMode === 2) {
-        // Auto/Fan mode - save to fan mode context
+      if (currentState.workMode === 2) {
+        // Pure fan mode - save to fan mode context
         this.fanModeFanSpeed = fanSpeed;
-        this.log.info(`💨 AC FAN SPEED: Set to ${fanName} (${value}% → F${fanSpeed} for AUTO/FAN mode)`);
-      } else if (currentState.workMode === 1) {
-        // Cool mode - save to cool mode context  
+        this.log.info(`💨 AC FAN SPEED: Set to ${fanName} (${value}% → F${fanSpeed} for PURE FAN mode)`);
+      } else if (currentState.workMode === 0) {
+        // AC cooling mode - save to cool mode context  
         this.coolModeFanSpeed = fanSpeed;
-        this.log.info(`❄️ AC FAN SPEED: Set to ${fanName} (${value}% → F${fanSpeed} for COOL mode)`);
+        this.log.info(`❄️ AC FAN SPEED: Set to ${fanName} (${value}% → F${fanSpeed} for AC COOLING mode)`);
       } else {
-        this.log.info(`💨 AC FAN SPEED: Unknown mode ${currentState.workMode}, using as fan mode`);
+        this.log.info(`💨 AC FAN SPEED: Unsupported mode ${currentState.workMode}, ignoring`);
+        return; // Don't set speed for unsupported modes
       }
       
       const properties = {
