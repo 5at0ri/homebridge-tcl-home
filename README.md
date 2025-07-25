@@ -84,8 +84,7 @@ Special thanks for the API documentation and authentication flow analysis.
 
 This plugin was created to get basic functionality working. If you'd like to add support for more devices or features:
 
-1. Fork this repository
-2. Add your improvements
+1. Fork this repository to add your own improvements or add different models. I'm a noob so I've only just got it working with my specific model right now.
 
 ## License
 
