@@ -281,11 +281,11 @@ class TclHomeApi {
     }
   }
 
-  async getDeviceState(deviceId) {
+  async getDeviceState(deviceId, forceRefresh = false) {
     try {
-      // Light rate limiting: only call once per 300ms per device (allow more frequent calls)
+      // Aggressive rate limiting bypass for critical operations
       const now = Date.now();
-      if (this.lastStateCall[deviceId] && (now - this.lastStateCall[deviceId]) < 300) {
+      if (!forceRefresh && this.lastStateCall[deviceId] && (now - this.lastStateCall[deviceId]) < 200) {
         this.debug(`Rate limited getDeviceState for ${deviceId}`);
         return this.getFallbackDeviceState(deviceId);
       }
@@ -311,7 +311,8 @@ class TclHomeApi {
           workMode: desired.workMode !== undefined ? desired.workMode : (reported.workMode || 0),
           windSpeed: desired.windSpeed !== undefined ? desired.windSpeed : (reported.windSpeed || 1),
           sleep: desired.sleep !== undefined ? desired.sleep : (reported.sleep || 0),
-          isOnline: true
+          isOnline: true,
+          lastUpdated: now
         };
         
         this.currentDeviceState[deviceId] = state;
@@ -326,14 +327,31 @@ class TclHomeApi {
   }
 
   getFallbackDeviceState(deviceId) {
-    return this.currentDeviceState[deviceId] || {
+    const cached = this.currentDeviceState[deviceId];
+    // Invalidate cache if it's older than 30 seconds to prevent stale state issues
+    if (cached && cached.lastUpdated && (Date.now() - cached.lastUpdated) > 30000) {
+      this.debug(`🗑️ Invalidating stale cache for ${deviceId}`);
+      delete this.currentDeviceState[deviceId];
+      return {
+        powerSwitch: 0,
+        targetTemperature: 18,
+        currentTemperature: 22,
+        workMode: 0,
+        windSpeed: 2,
+        sleep: 0,
+        isOnline: false,
+        lastUpdated: Date.now()
+      };
+    }
+    return cached || {
       powerSwitch: 0,
       targetTemperature: 18,
       currentTemperature: 22,
       workMode: 0,
       windSpeed: 2,
       sleep: 0,
-      isOnline: false
+      isOnline: false,
+      lastUpdated: Date.now()
     };
   }
 
@@ -358,6 +376,23 @@ class TclHomeApi {
           this.currentDeviceState[deviceId] = {};
         }
         Object.assign(this.currentDeviceState[deviceId], properties);
+        
+        // Force immediate state verification after command
+        setTimeout(async () => {
+          try {
+            const verifyState = await this.getDeviceState(deviceId, true); // Force refresh
+            if (verifyState) {
+              this.debug(`🔍 Command verification: Power=${verifyState.powerSwitch}, Mode=${verifyState.workMode}`);
+              // If critical properties don't match, retry command once
+              if (properties.powerSwitch !== undefined && verifyState.powerSwitch !== properties.powerSwitch) {
+                this.log.warn(`⚠️ Power state mismatch detected, retrying command`);
+                await this.publishToAwsIot(topic, JSON.stringify(payload));
+              }
+            }
+          } catch (error) {
+            this.debug('Command verification failed:', error.message);
+          }
+        }, 2000);
         
         this.log.info(`✅ REAL CONTROL: Successfully sent command to device ${deviceId}`);
         return true;
@@ -958,6 +993,10 @@ class TclAirConditioner {
       const Characteristic = this.platform.api.hap.Characteristic;
       let properties = {};
 
+      // Force fresh state check before critical operations
+      const preState = await this.platform.tclApi.getDeviceState(this.device.deviceId, true);
+      this.log.info(`🔍 Pre-command state: Power=${preState?.powerSwitch}, Mode=${preState?.workMode}`);
+
       switch (value) {
         case Characteristic.TargetHeatingCoolingState.OFF:
           properties = { 
@@ -969,7 +1008,7 @@ class TclAirConditioner {
           
         case Characteristic.TargetHeatingCoolingState.COOL:
           // Get current target temperature to preserve it
-          const currentState = await this.platform.tclApi.getDeviceState(this.device.deviceId);
+          const currentState = await this.platform.tclApi.getDeviceState(this.device.deviceId, true);
           const targetTemp = currentState?.targetTemperature || 24;
           
           properties = {
@@ -997,24 +1036,54 @@ class TclAirConditioner {
           break;
       }
 
-      const success = await this.executeWithAWSRetry(
-        () => this.platform.tclApi.setDeviceState(this.device.deviceId, properties),
-        'setTargetHeatingCoolingState'
-      );
+      // Attempt command with multiple retries for critical state changes
+      let success = false;
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        success = await this.executeWithAWSRetry(
+          () => this.platform.tclApi.setDeviceState(this.device.deviceId, properties),
+          `setTargetHeatingCoolingState (attempt ${attempt})`
+        );
+        
+        if (success) {
+          // Verify the command took effect
+          setTimeout(async () => {
+            try {
+              const verifyState = await this.platform.tclApi.getDeviceState(this.device.deviceId, true);
+              this.log.info(`🔍 Post-command state: Power=${verifyState?.powerSwitch}, Mode=${verifyState?.workMode}`);
+              
+              if (verifyState) {
+                this.updateHomeKitFromState(verifyState);
+                
+                // Check if critical properties match
+                const powerMatches = verifyState.powerSwitch === properties.powerSwitch;
+                const modeMatches = !properties.workMode || verifyState.workMode === properties.workMode;
+                
+                if (!powerMatches || !modeMatches) {
+                  this.log.warn(`⚠️ State verification failed: Power=${powerMatches}, Mode=${modeMatches}`);
+                  if (attempt < 3) {
+                    this.log.info(`🔄 Retrying command (attempt ${attempt + 1}/3)`);
+                  }
+                } else {
+                  this.log.info(`✅ Command verified successfully`);
+                }
+              }
+            } catch (error) {
+              this.platform.tclApi.debug('Error in state verification:', error.message);
+            }
+          }, 1500 * attempt); // Increase delay with each attempt
+          
+          break; // Exit retry loop on success
+        } else if (attempt < 3) {
+          this.log.warn(`🔄 Command failed, retrying (attempt ${attempt + 1}/3)`);
+          await new Promise(resolve => setTimeout(resolve, 2000 * attempt)); // Exponential backoff
+        }
+      }
       
       if (success) {
         this.log.info(`🎯 Set heating/cooling state to ${value}`);
-        // Force immediate status update after 1 second to verify changes
-        setTimeout(async () => {
-          try {
-            const newState = await this.platform.tclApi.getDeviceState(this.device.deviceId);
-            if (newState) {
-              this.updateHomeKitFromState(newState);
-            }
-          } catch (error) {
-            this.platform.tclApi.debug('Error in delayed status update:', error.message);
-          }
-        }, 1000);
+      } else {
+        this.log.error(`❌ All attempts failed for heating/cooling state ${value}`);
+        throw new this.platform.api.hap.HapStatusError(this.platform.api.hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE);
       }
     } catch (error) {
       this.log.error('❌ Error setting target state:', error.message);
@@ -1176,10 +1245,11 @@ class TclAirConditioner {
     try {
       let success = false;
       
+      // Force fresh state check for fan operations
+      const currentState = await this.platform.tclApi.getDeviceState(this.device.deviceId, true);
+      this.log.info(`🔍 Fan command - Current state: Power=${currentState?.powerSwitch}, Mode=${currentState?.workMode}`);
+      
       if (value) {
-        // Check current mode and maintain it, just ensure device is on
-        const currentState = await this.platform.tclApi.getDeviceState(this.device.deviceId);
-        
         if (!currentState || !currentState.powerSwitch) {
           // Device is off, turn on in pure fan mode (mode 2)
           this.log.info(`💨 AC FAN: Turning ON device in pure fan mode`);
@@ -1188,39 +1258,81 @@ class TclAirConditioner {
             workMode: 2, // Pure fan mode
             windSpeed: this.fanModeFanSpeed
           };
-          success = await this.executeWithAWSRetry(
-            () => this.platform.tclApi.setDeviceState(this.device.deviceId, properties),
-            'setFanOn'
-          );
+          
+          // Multiple retry attempts for critical power-on operations
+          for (let attempt = 1; attempt <= 3; attempt++) {
+            success = await this.executeWithAWSRetry(
+              () => this.platform.tclApi.setDeviceState(this.device.deviceId, properties),
+              `setFanOn (attempt ${attempt})`
+            );
+            if (success) break;
+            if (attempt < 3) {
+              this.log.warn(`🔄 Fan ON failed, retrying (attempt ${attempt + 1}/3)`);
+              await new Promise(resolve => setTimeout(resolve, 2000 * attempt));
+            }
+          }
         } else {
           // Device is already on, keep current mode
           this.log.info(`💨 AC FAN: Device already on in mode ${currentState.workMode}`);
           success = true;
         }
       } else {
-        // Turn off entire device
-        this.log.info(`💨 AC FAN: Turning OFF device`);
+        // Turn off entire device - this is the critical fix for the off command
+        this.log.info(`💨 AC FAN: Turning OFF device (CRITICAL: Force OFF regardless of current state)`);
         const properties = {
           powerSwitch: 0
         };
-        success = await this.executeWithAWSRetry(
-          () => this.platform.tclApi.setDeviceState(this.device.deviceId, properties),
-          'setFanOff'
-        );
+        
+        // Multiple retry attempts for critical power-off operations
+        for (let attempt = 1; attempt <= 3; attempt++) {
+          success = await this.executeWithAWSRetry(
+            () => this.platform.tclApi.setDeviceState(this.device.deviceId, properties),
+            `setFanOff (attempt ${attempt})`
+          );
+          
+          // Additional verification for OFF command
+          if (success) {
+            setTimeout(async () => {
+              try {
+                const verifyState = await this.platform.tclApi.getDeviceState(this.device.deviceId, true);
+                if (verifyState && verifyState.powerSwitch !== 0) {
+                  this.log.warn(`⚠️ OFF command verification failed, device still shows Power=${verifyState.powerSwitch}`);
+                  if (attempt < 3) {
+                    this.log.info(`🔄 Retrying OFF command (attempt ${attempt + 1}/3)`);
+                  }
+                } else {
+                  this.log.info(`✅ OFF command verified successfully`);
+                }
+              } catch (error) {
+                this.platform.tclApi.debug('OFF verification error:', error.message);
+              }
+            }, 2000);
+            break;
+          }
+          
+          if (attempt < 3) {
+            this.log.warn(`🔄 Fan OFF failed, retrying (attempt ${attempt + 1}/3)`);
+            await new Promise(resolve => setTimeout(resolve, 2000 * attempt));
+          }
+        }
       }
       
       if (success) {
-        // Force immediate status update after 1 second
+        // Force immediate status update with longer delay for verification
         setTimeout(async () => {
           try {
-            const newState = await this.platform.tclApi.getDeviceState(this.device.deviceId);
+            const newState = await this.platform.tclApi.getDeviceState(this.device.deviceId, true);
             if (newState) {
               this.updateHomeKitFromState(newState);
+              this.log.info(`🔍 Final fan state verification: Power=${newState.powerSwitch}, Mode=${newState.workMode}`);
             }
           } catch (error) {
             this.platform.tclApi.debug('Error in delayed fan status update:', error.message);
           }
-        }, 1000);
+        }, 2000);
+      } else {
+        this.log.error(`❌ All fan command attempts failed`);
+        throw new this.platform.api.hap.HapStatusError(this.platform.api.hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE);
       }
     } catch (error) {
       this.log.error('❌ Error setting fan state:', error.message);
@@ -1331,7 +1443,9 @@ class TclAirConditioner {
     // Use fast polling frequency for responsive manual device changes
     setInterval(async () => {
       try {
-        const state = await this.platform.tclApi.getDeviceState(this.device.deviceId);
+        // Force fresh state check every few polls to prevent cache staleness
+        const shouldForceRefresh = (Date.now() - this.lastSuccessfulPoll) > 10000; // Force refresh every 10 seconds
+        const state = await this.platform.tclApi.getDeviceState(this.device.deviceId, shouldForceRefresh);
         if (state) {
           // Reset error tracking on successful poll
           this.consecutiveErrors = 0;
@@ -1373,5 +1487,17 @@ class TclAirConditioner {
         }
       }
     }, 2000); // 2-second polling for faster manual change detection and status updates
+    
+    // Additional periodic cache invalidation to ensure fresh state
+    setInterval(() => {
+      const deviceId = this.device.deviceId;
+      if (this.platform.tclApi.currentDeviceState[deviceId]) {
+        const lastUpdate = this.platform.tclApi.currentDeviceState[deviceId].lastUpdated;
+        if (lastUpdate && (Date.now() - lastUpdate) > 45000) { // 45 seconds
+          this.platform.tclApi.debug(`🗑️ Periodic cache invalidation for ${deviceId}`);
+          delete this.platform.tclApi.currentDeviceState[deviceId];
+        }
+      }
+    }, 30000); // Check every 30 seconds
   }
 }
